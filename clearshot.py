@@ -235,6 +235,15 @@ def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
 
 
 # ============================================================ anotaciones
+def _font(size: int, bold: bool = True) -> QFont:
+    f = QFont("Segoe UI")
+    f.setPixelSize(size)
+    f.setBold(bold)
+    f.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.PreferQuality)
+    f.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    return f
+
+
 def _pen(color, width, cap=Qt.PenCapStyle.RoundCap) -> QPen:
     pen = QPen(QColor(color), width)
     pen.setCapStyle(cap)
@@ -270,9 +279,7 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
         if t == "mosaic":
             _draw_mosaic(p, a, img, dpr)
         elif t == "text":
-            f = QFont("Segoe UI")
-            f.setPixelSize(a["size"])
-            f.setBold(True)
+            f = _font(a["size"], bold=True)
             p.setFont(f)
             p.setPen(QColor(a["color"]))
             fm = QFontMetrics(f)
@@ -285,9 +292,7 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
             p.setBrush(col)
             p.drawEllipse(a["pos"], r, r)
             lum = 0.299 * col.red() + 0.587 * col.green() + 0.114 * col.blue()
-            f = QFont("Segoe UI")
-            f.setPixelSize(max(9, int(r * 1.1)))
-            f.setBold(True)
+            f = _font(max(9, int(r * 1.1)), bold=True)
             p.setFont(f)
             p.setPen(QColor("#111111") if lum > 150 else QColor("white"))
             p.drawText(QRectF(a["pos"].x() - r, a["pos"].y() - r, 2 * r, 2 * r),
@@ -699,7 +704,9 @@ class Overlay(QWidget):
         p = QPainter(self)
         p.drawPixmap(self.rect(), self.pm)
         p.fillRect(self.rect(), QColor(0, 0, 0, 120))
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing |
+                         QPainter.RenderHint.TextAntialiasing |
+                         QPainter.RenderHint.SmoothPixmapTransform)
         if self.sel:
             s = self.sel
             src = QRectF(s.x() * self.dpr, s.y() * self.dpr,
@@ -719,8 +726,7 @@ class Overlay(QWidget):
                 for x, y in self._handle_points().values():
                     p.drawRoundedRect(QRectF(x - 4, y - 4, 8, 8), 2, 2)
 
-            f = QFont("Segoe UI")
-            f.setPixelSize(12)
+            f = _font(12, bold=False)
             p.setFont(f)
             label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
             lw = QFontMetrics(f).horizontalAdvance(label) + 16
@@ -739,8 +745,7 @@ class Overlay(QWidget):
             self._draw_magnifier(p)
 
     def _draw_hint(self, p: QPainter):
-        f = QFont("Segoe UI")
-        f.setPixelSize(14)
+        f = _font(14, bold=False)
         p.setFont(f)
         text = "Arrastra para seleccionar el área   ·   Esc para salir"
         w = QFontMetrics(f).horizontalAdvance(text) + 32
@@ -790,8 +795,7 @@ class Overlay(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(20, 22, 28, 235))
         p.drawRoundedRect(panel, 8, 8)
-        f = QFont("Segoe UI")
-        f.setPixelSize(12)
+        f = _font(12, bold=False)
         p.setFont(f)
         p.setPen(QColor("white"))
         p.drawText(QRectF(panel.x(), panel.y() + 3, panel.width(), 18),
@@ -809,9 +813,7 @@ class Overlay(QWidget):
         self.text_size = int(12 + self.pen_w * 2.2)
         self.text_color = self.pen_color
         self.text_pos = QPointF(pos)
-        f = QFont("Segoe UI")
-        f.setPixelSize(self.text_size)
-        f.setBold(True)
+        f = _font(self.text_size, bold=True)
         fm = QFontMetrics(f)
         e = TextEdit(self)
         e.setFont(f)
@@ -1039,7 +1041,9 @@ class Overlay(QWidget):
         img = self.img.copy(dev)
         if self.annots:
             p = QPainter(img)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHints(QPainter.RenderHint.Antialiasing |
+                             QPainter.RenderHint.TextAntialiasing |
+                             QPainter.RenderHint.SmoothPixmapTransform)
             p.scale(self.dpr, self.dpr)
             p.translate(-s.x(), -s.y())
             for a in self.annots:
@@ -1215,6 +1219,19 @@ class App(QObject):
 
 
 def main():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # Per-Monitor V2
+        except Exception:
+            try:
+                import ctypes
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor
+            except Exception:
+                pass
+
     app = QApplication(sys.argv)
     if "--make-icon" in sys.argv:  # usado por instalar.bat para el .exe
         out = sys.argv[sys.argv.index("--make-icon") + 1]
