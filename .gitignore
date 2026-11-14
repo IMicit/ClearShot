@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build artifacts
+build/
+dist/
+*.manifest
+*.spec
+
+# Capturas de prueba
+Imagenes/
+captura_*.png
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+env/
+
+# Sistema y temporales
+*.lock
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
