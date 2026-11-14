@@ -342,6 +342,37 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
         p.restore()
 
 
+def _annot_rect(a: dict) -> QRectF:
+    """Bounding rect de una anotación en coordenadas lógicas (con margen)."""
+    t = a["tool"]
+    w = a.get("width", 3)
+    if t in ("pen", "marker"):
+        pts = a.get("points", [])
+        if not pts:
+            return QRectF()
+        m = max(w * 2, 4)
+        xs = [p.x() for p in pts]
+        ys = [p.y() for p in pts]
+        return QRectF(min(xs) - m, min(ys) - m,
+                      max(xs) - min(xs) + 2 * m, max(ys) - min(ys) + 2 * m)
+    elif t in ("line", "rect", "ellipse", "mosaic"):
+        r = QRectF(a["p1"], a["p2"]).normalized()
+        m = w + 2
+        return r.adjusted(-m, -m, m, m)
+    elif t == "arrow":
+        r = QRectF(a["p1"], a["p2"]).normalized()
+        m = w * 3 + 15
+        return r.adjusted(-m, -m, m, m)
+    elif t == "text":
+        pos = a["pos"]
+        return QRectF(pos.x(), pos.y(), 600, a.get("size", 16) + 10)
+    elif t == "step":
+        pos = a["pos"]
+        r = 11 + w * 1.2 + 2
+        return QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+    return QRectF()
+
+
 # ============================================================ widgets
 class Panel(QWidget):
     """Contenedor que absorbe el ratón para no iniciar selecciones debajo."""
@@ -697,6 +728,9 @@ class Overlay(QWidget):
                     cur = Qt.CursorShape.SizeAllCursor
                 elif self.tool == "text":
                     cur = Qt.CursorShape.IBeamCursor
+            elif self.tool == "text":
+                # fuera del área: cursor de texto para coherencia
+                cur = Qt.CursorShape.IBeamCursor
         self.setCursor(cur)
 
     # ---------- dibujo ----------
@@ -712,11 +746,9 @@ class Overlay(QWidget):
             src = QRectF(s.x() * self.dpr, s.y() * self.dpr,
                          s.width() * self.dpr, s.height() * self.dpr)
             p.drawPixmap(QRectF(s), self.pm, src)
-            p.save()
-            p.setClipRect(s)
+            # Sin clip: las anotaciones pueden extenderse fuera del área seleccionada
             for a in self.annots + ([self.cur] if self.cur else []):
                 draw_annotation(p, a, self.img, self.dpr)
-            p.restore()
 
             p.setPen(QPen(QColor(ACCENT), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -877,11 +909,16 @@ class Overlay(QWidget):
                              "rect": QRect(self.sel)}
                 self.update()
                 return
-            if self.sel.contains(ip):
-                if self.tool == "select":
+            if self.tool == "select":
+                # Herramienta área: mover solo dentro del área, fuera = nueva selección
+                if self.sel.contains(ip):
                     self.bar.hide()
                     self.drag = {"mode": "move", "origin": ip, "rect": QRect(self.sel)}
-                elif self.tool == "text":
+                    self.update()
+                    return
+            else:
+                # Herramientas de dibujo: funcionan en toda la pantalla (igual que Lightshot)
+                if self.tool == "text":
                     self._start_text(pos)
                 elif self.tool == "step":
                     n = sum(1 for a in self.annots if a["tool"] == "step") + 1
@@ -889,7 +926,7 @@ class Overlay(QWidget):
                                         "width": self.pen_w, "pos": pos, "n": n})
                     self.redo_stack.clear()
                     self._refresh_undo()
-                elif self.tool == "pen" or self.tool == "marker":
+                elif self.tool in ("pen", "marker"):
                     self.cur = {"tool": self.tool, "color": self.pen_color,
                                 "width": self.pen_w, "points": [pos]}
                 else:
@@ -898,7 +935,7 @@ class Overlay(QWidget):
                 self.update()
                 return
 
-        # clic fuera: nueva selección
+        # clic fuera con herramienta área: nueva selección
         self.bar.hide()
         self.annots.clear()
         self.redo_stack.clear()
@@ -1031,21 +1068,40 @@ class Overlay(QWidget):
             self.update()
 
     def render_result(self):
-        """Recorta a resolución nativa y dibuja las anotaciones encima."""
+        """Recorta a resolución nativa y dibuja las anotaciones encima.
+        Si hay anotaciones fuera del área seleccionada, el recorte se expande
+        para incluirlas (igual que Lightshot)."""
         self._commit_text()
         if not self.sel:
             return None
         s = self.sel
-        dev = QRect(round(s.x() * self.dpr), round(s.y() * self.dpr),
-                    round(s.width() * self.dpr), round(s.height() * self.dpr))
+
+        # Calcular el rect final = selección ∪ bounds de todas las anotaciones
+        bounds = QRectF(s)
+        for a in self.annots:
+            r = _annot_rect(a)
+            if not r.isEmpty():
+                bounds = bounds.united(r)
+        # Limitar a los límites de la pantalla
+        bounds = bounds.intersected(QRectF(self.rect()))
+        bx = int(math.floor(bounds.x()))
+        by = int(math.floor(bounds.y()))
+        bw = int(math.ceil(bounds.right())) - bx
+        bh = int(math.ceil(bounds.bottom())) - by
+
+        # Convertir a píxeles físicos y recortar
+        dev = QRect(round(bx * self.dpr), round(by * self.dpr),
+                    round(bw * self.dpr), round(bh * self.dpr))
+        dev = dev.intersected(QRect(0, 0, self.img.width(), self.img.height()))
         img = self.img.copy(dev)
+
         if self.annots:
             p = QPainter(img)
             p.setRenderHints(QPainter.RenderHint.Antialiasing |
                              QPainter.RenderHint.TextAntialiasing |
                              QPainter.RenderHint.SmoothPixmapTransform)
             p.scale(self.dpr, self.dpr)
-            p.translate(-s.x(), -s.y())
+            p.translate(-bx, -by)
             for a in self.annots:
                 draw_annotation(p, a, self.img, self.dpr)
             p.end()
