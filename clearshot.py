@@ -1316,6 +1316,8 @@ def main():
     if sys.platform == "win32":
         try:
             import ctypes
+            # Registrar identificador único de aplicación para Windows (Start Menu, barra de tareas y notificaciones)
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("IMicit.ClearShot.App.1")
             user32 = ctypes.windll.user32
             user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
             user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # Per-Monitor V2

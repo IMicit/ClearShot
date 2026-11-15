@@ -39,11 +39,12 @@ if not exist "%DEST%" mkdir "%DEST%"
 taskkill /f /im ClearShot.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 copy /y "dist\ClearShot.exe" "%DEST%\ClearShot.exe" >nul
+if exist desinstalar.bat copy /y "desinstalar.bat" "%DEST%\desinstalar.bat" >nul
 if errorlevel 1 goto error
 
 echo.
-echo [4/4] Configurando inicio automatico con Windows...
-powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell; foreach($f in @([Environment]::GetFolderPath('Startup'),[Environment]::GetFolderPath('Programs'))){ $s=$w.CreateShortcut($f+'\ClearShot.lnk'); $s.TargetPath='%DEST%\ClearShot.exe'; $s.WorkingDirectory='%DEST%'; $s.IconLocation='%DEST%\ClearShot.exe,0'; $s.Save() }"
+echo [4/4] Configurando aplicacion e inicio con Windows...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$w=New-Object -ComObject WScript.Shell; foreach($f in @([Environment]::GetFolderPath('Startup'),[Environment]::GetFolderPath('Programs'))){ $s=$w.CreateShortcut($f+'\ClearShot.lnk'); $s.TargetPath='%DEST%\ClearShot.exe'; $s.WorkingDirectory='%DEST%'; $s.IconLocation='%DEST%\ClearShot.exe,0'; $s.Description='ClearShot - Capturador de pantalla sin perdida'; $s.Save() }; $ap='HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\ClearShot.exe'; if(-not(Test-Path $ap)){New-Item $ap -Force|Out-Null}; Set-ItemProperty $ap '(Default)' '%DEST%\ClearShot.exe'; Set-ItemProperty $ap 'Path' '%DEST%'; $un='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClearShot'; if(-not(Test-Path $un)){New-Item $un -Force|Out-Null}; Set-ItemProperty $un 'DisplayName' 'ClearShot'; Set-ItemProperty $un 'DisplayVersion' '1.1.0'; Set-ItemProperty $un 'Publisher' 'IMicit'; Set-ItemProperty $un 'DisplayIcon' '%DEST%\ClearShot.exe,0'; Set-ItemProperty $un 'InstallLocation' '%DEST%'; Set-ItemProperty $un 'UninstallString' '%DEST%\desinstalar.bat'; Set-ItemProperty $un 'NoModify' 1 -Type DWord; Set-ItemProperty $un 'NoRepair' 1 -Type DWord"
 if errorlevel 1 goto error
 
 start "" "%DEST%\ClearShot.exe"
