@@ -8,13 +8,14 @@ Capturador de pantalla para Windows estilo Lightshot, **sin pérdida de calidad*
 
 ## Características
 
-- **Sin pérdida:** captura a resolución física real (respeta el escalado de Windows) y guarda en PNG. Al copiar al portapapeles no se recomprime.
+- **Sin pérdida y máxima nitidez:** captura a resolución física real (DPI Awareness Per-Monitor V2 nativo de Windows) y guarda en PNG lossless. Renderizado tipográfico avanzado con subpixel hinting. Al copiar al portapapeles no se recomprime.
 - **Atajo global:** `Impr Pant` o `Ctrl+Alt+S`, desde cualquier programa.
-- **Carpeta de guardado fija:** el botón **Guardar** siempre va a la carpeta que elijas (por defecto `Imágenes\ClearShot`), sin diálogos.
-- **Anotaciones:** lápiz, línea, flecha, rectángulo, elipse, resaltador, texto, números de paso y pixelado para ocultar datos sensibles.
-- **Colores y grosor:** paleta a la vista, selector de color personalizado y slider de grosor.
-- **Selección ajustable:** mueve y redimensiona el área con tiradores, con una lupa que muestra coordenadas y color bajo el cursor.
-- **Ligero:** vive en la bandeja del sistema e inicia con Windows.
+- **Carpeta de guardado fija:** el botón **Guardar** siempre va a la carpeta que elijas (por defecto `Imágenes\ClearShot`), sin diálogos innecesarios.
+- **Anotaciones libres (estilo Lightshot):** dibuja dentro o fuera del área seleccionada con lápiz, línea, flecha, rectángulo, elipse, resaltador, texto, números de paso y pixelado/mosaico. Al guardar, el recorte se auto-expande para incluir todas tus anotaciones.
+- **Notificación clickeable:** al guardar, haz clic en la notificación de Windows para abrir la captura inmediatamente.
+- **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider o rueda del ratón para el grosor.
+- **Selección ajustable:** mueve y redimensiona con 8 tiradores, con una lupa 8x que muestra coordenadas y color HEX bajo el cursor.
+- **Ligero:** vive en la bandeja del sistema e inicia con Windows sin consumir recursos en segundo plano.
 
 ## Instalación (Windows)
 
@@ -74,7 +75,8 @@ Si necesitas elegir nombre, carpeta o formato (PNG, JPG, BMP) solo para una capt
 |---|---|
 | `Enter` / `Ctrl+C` | Copiar al portapapeles |
 | `Ctrl+S` | Guardar en la carpeta configurada |
-| `Ctrl+Shift+S` | Guardar como… |
+| `Ctrl+Shift+C` | Guardar en carpeta **y** copiar al portapapeles a la vez |
+| `Ctrl+Shift+S` | Guardar como… (elegir carpeta/formato) |
 | `Ctrl+Z` | Deshacer |
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Rehacer |
 | `1` a `9` | Elegir color de la paleta |

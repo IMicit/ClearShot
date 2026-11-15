@@ -464,6 +464,7 @@ def _sep() -> QFrame:
 class Overlay(QWidget):
     closed = pyqtSignal()
     message = pyqtSignal(str)
+    saved = pyqtSignal(str)   # emitida con la ruta completa al guardar con éxito
 
     def __init__(self, pixmap: QPixmap, screen):
         super().__init__()
@@ -564,7 +565,7 @@ class Overlay(QWidget):
             b.clicked.connect(fn)
             row1.addWidget(b)
             setattr(self, name + "_btn", b)
-        self.copy_btn.setToolTip("Copiar al portapapeles  (Enter / Ctrl+C)")
+        self.copy_btn.setToolTip("Copiar al portapapeles  (Enter / Ctrl+C)\nGuardar y copiar  (Ctrl+Shift+C)")
         close = self._tbtn("close", "Cancelar  (Esc)")
         close.clicked.connect(self.cancel)
         row1.addWidget(close)
@@ -1037,7 +1038,7 @@ class Overlay(QWidget):
         if k == Qt.Key.Key_Escape:
             self.cancel()
         elif ctrl and k == Qt.Key.Key_C:
-            self.copy()
+            self.save_and_copy() if shift else self.copy()
         elif ctrl and k == Qt.Key.Key_S:
             self.save_as() if shift else self.save()
         elif ctrl and k == Qt.Key.Key_Z:
@@ -1139,10 +1140,29 @@ class Overlay(QWidget):
                 return
         path = folder / f"captura_{datetime.now():%Y-%m-%d_%H-%M-%S}.png"
         if img.save(str(path), "PNG"):  # PNG = sin pérdida
-            self.message.emit(f"Guardada en: {path}")
+            self.saved.emit(str(path))
             self.cancel()
         else:
             self.message.emit("No se pudo guardar la captura")
+
+    def save_and_copy(self):
+        """Guarda en la carpeta configurada Y copia al portapapeles. (Ctrl+Shift+C)"""
+        img = self.render_result()
+        if img is None:
+            return
+        # Copiar primero (siempre funciona, independiente del guardado)
+        QApplication.clipboard().setImage(img)
+        folder = get_save_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"captura_{datetime.now():%Y-%m-%d_%H-%M-%S}.png"
+            if img.save(str(path), "PNG"):
+                self.saved.emit(str(path))
+            else:
+                self.message.emit("Copiada al portapapeles (no se pudo guardar)")
+        except OSError:
+            self.message.emit("Copiada al portapapeles (error al acceder a la carpeta)")
+        self.cancel()
 
     def save_as(self):
         """Extra (Ctrl+Shift+S): elegir nombre/carpeta/formato solo esta vez."""
@@ -1164,7 +1184,7 @@ class Overlay(QWidget):
         fmt = {".png": "PNG", ".jpg": "JPG", ".jpeg": "JPG", ".bmp": "BMP"}[ext]
         ok = img.save(fn, fmt, 100) if fmt == "JPG" else img.save(fn, fmt)
         if ok:
-            self.message.emit(f"Guardada en: {fn}")
+            self.saved.emit(str(fn))
             self.cancel()
         else:
             self.message.emit("No se pudo guardar la captura")
@@ -1185,6 +1205,7 @@ class App(QObject):
     def __init__(self):
         super().__init__()
         self.overlay = None
+        self._last_path: str | None = None   # última captura guardada (para abrir al clic)
         self.tray = QSystemTrayIcon(make_icon())
         menu = QMenu()
         self.a_dir = QAction("", menu)
@@ -1212,6 +1233,7 @@ class App(QObject):
         self._refresh_menu()
         self.tray.show()
         self.hotkey.connect(self.capture)
+        self.tray.messageClicked.connect(self._open_last_saved)
         self._start_hotkeys()
 
         s = cfg()
@@ -1253,6 +1275,7 @@ class App(QObject):
         self.overlay = Overlay(pm, screen)
         self.overlay.closed.connect(self._overlay_closed)
         self.overlay.message.connect(lambda m: self.tray.showMessage("ClearShot", m))
+        self.overlay.saved.connect(self._on_saved)
         self.overlay.show()
         self.overlay.raise_()
         self.overlay.activateWindow()
@@ -1261,6 +1284,21 @@ class App(QObject):
     def _overlay_closed(self):
         self.overlay = None
         self._refresh_menu()
+
+    def _on_saved(self, path: str):
+        """Muestra notificación clickeable al guardar una captura."""
+        self._last_path = path
+        name = Path(path).name
+        self.tray.showMessage(
+            "ClearShot — Guardada",
+            f"{name}\nClic para abrir",
+            QSystemTrayIcon.MessageIcon.Information,
+            4000)
+
+    def _open_last_saved(self):
+        """Abre la última captura guardada al hacer clic en la notificación."""
+        if self._last_path and Path(self._last_path).exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._last_path))
 
     def open_folder(self):
         d = get_save_dir()
