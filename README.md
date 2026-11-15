@@ -11,7 +11,7 @@ Capturador de pantalla para Windows estilo Lightshot, **sin pérdida de calidad*
 - **Sin pérdida y máxima nitidez:** captura a resolución física real (DPI Awareness Per-Monitor V2 nativo de Windows) y guarda en PNG lossless. Renderizado tipográfico avanzado con subpixel hinting. Al copiar al portapapeles no se recomprime.
 - **Atajo global:** `Impr Pant` o `Ctrl+Alt+S`, desde cualquier programa.
 - **Carpeta de guardado fija:** el botón **Guardar** siempre va a la carpeta que elijas (por defecto `Imágenes\ClearShot`), sin diálogos innecesarios.
-- **Anotaciones libres (estilo Lightshot):** dibuja dentro o fuera del área seleccionada con lápiz, línea, flecha, rectángulo, elipse, resaltador, texto, números de paso y pixelado/mosaico. Al guardar, el recorte se auto-expande para incluir todas tus anotaciones.
+- **Anotaciones libres (estilo Lightshot):** dibuja con total libertad dentro o fuera de la selección (apuntes, flechas, etc.); al guardar o copiar, se exporta estrictamente el área seleccionada original.
 - **Notificación clickeable:** al guardar, haz clic en la notificación de Windows para abrir la captura inmediatamente.
 - **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider o rueda del ratón para el grosor.
 - **Selección ajustable:** mueve y redimensiona con 8 tiradores, con una lupa 8x que muestra coordenadas y color HEX bajo el cursor.

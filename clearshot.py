@@ -342,37 +342,6 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
         p.restore()
 
 
-def _annot_rect(a: dict) -> QRectF:
-    """Bounding rect de una anotación en coordenadas lógicas (con margen)."""
-    t = a["tool"]
-    w = a.get("width", 3)
-    if t in ("pen", "marker"):
-        pts = a.get("points", [])
-        if not pts:
-            return QRectF()
-        m = max(w * 2, 4)
-        xs = [p.x() for p in pts]
-        ys = [p.y() for p in pts]
-        return QRectF(min(xs) - m, min(ys) - m,
-                      max(xs) - min(xs) + 2 * m, max(ys) - min(ys) + 2 * m)
-    elif t in ("line", "rect", "ellipse", "mosaic"):
-        r = QRectF(a["p1"], a["p2"]).normalized()
-        m = w + 2
-        return r.adjusted(-m, -m, m, m)
-    elif t == "arrow":
-        r = QRectF(a["p1"], a["p2"]).normalized()
-        m = w * 3 + 15
-        return r.adjusted(-m, -m, m, m)
-    elif t == "text":
-        pos = a["pos"]
-        return QRectF(pos.x(), pos.y(), 600, a.get("size", 16) + 10)
-    elif t == "step":
-        pos = a["pos"]
-        r = 11 + w * 1.2 + 2
-        return QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
-    return QRectF()
-
-
 # ============================================================ widgets
 class Panel(QWidget):
     """Contenedor que absorbe el ratón para no iniciar selecciones debajo."""
@@ -1070,29 +1039,13 @@ class Overlay(QWidget):
 
     def render_result(self):
         """Recorta a resolución nativa y dibuja las anotaciones encima.
-        Si hay anotaciones fuera del área seleccionada, el recorte se expande
-        para incluirlas (igual que Lightshot)."""
+        Guarda estrictamente el área seleccionada, descartando lo que quede fuera."""
         self._commit_text()
         if not self.sel:
             return None
         s = self.sel
-
-        # Calcular el rect final = selección ∪ bounds de todas las anotaciones
-        bounds = QRectF(s)
-        for a in self.annots:
-            r = _annot_rect(a)
-            if not r.isEmpty():
-                bounds = bounds.united(r)
-        # Limitar a los límites de la pantalla
-        bounds = bounds.intersected(QRectF(self.rect()))
-        bx = int(math.floor(bounds.x()))
-        by = int(math.floor(bounds.y()))
-        bw = int(math.ceil(bounds.right())) - bx
-        bh = int(math.ceil(bounds.bottom())) - by
-
-        # Convertir a píxeles físicos y recortar
-        dev = QRect(round(bx * self.dpr), round(by * self.dpr),
-                    round(bw * self.dpr), round(bh * self.dpr))
+        dev = QRect(round(s.x() * self.dpr), round(s.y() * self.dpr),
+                    round(s.width() * self.dpr), round(s.height() * self.dpr))
         dev = dev.intersected(QRect(0, 0, self.img.width(), self.img.height()))
         img = self.img.copy(dev)
 
@@ -1102,7 +1055,7 @@ class Overlay(QWidget):
                              QPainter.RenderHint.TextAntialiasing |
                              QPainter.RenderHint.SmoothPixmapTransform)
             p.scale(self.dpr, self.dpr)
-            p.translate(-bx, -by)
+            p.translate(-s.x(), -s.y())
             for a in self.annots:
                 draw_annotation(p, a, self.img, self.dpr)
             p.end()
