@@ -37,7 +37,7 @@ echo [3/4] Copiando a su ubicacion final...
 set "DEST=%LOCALAPPDATA%\ClearShot"
 if not exist "%DEST%" mkdir "%DEST%"
 taskkill /f /im ClearShot.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 copy /y "dist\ClearShot.exe" "%DEST%\ClearShot.exe" >nul
 if errorlevel 1 goto error
 
