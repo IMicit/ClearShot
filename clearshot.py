@@ -1210,15 +1210,37 @@ class App(QObject):
         except ImportError:
             self.tray.showMessage("ClearShot", "Instala pynput para usar atajos globales.")
             return
+
         emit = self.hotkey.emit
-        for mapping in ({"<print_screen>": emit, "<ctrl>+<alt>+s": emit},
-                        {"<ctrl>+<alt>+s": emit}):
+
+        # En Windows interceptamos y suprimimos VK_SNAPSHOT (tecla Impr Pant / Print Screen)
+        # para evitar que Windows tome su propia captura completa al mismo tiempo.
+        filter_kwargs = {}
+        if sys.platform == "win32":
+            def win32_event_filter(msg, data):
+                if data.vkCode == 44:  # 44 = VK_SNAPSHOT (Impr Pant)
+                    if msg in (0x0100, 0x0104):  # WM_KEYDOWN, WM_SYSKEYDOWN
+                        emit()
+                    if hasattr(self, "listener") and self.listener:
+                        self.listener.suppress_event()
+                return True
+            filter_kwargs["win32_event_filter"] = win32_event_filter
+
+        mapping = {"<ctrl>+<alt>+s": emit}
+        if sys.platform != "win32":
+            mapping["<print_screen>"] = emit
+
+        try:
+            self.listener = keyboard.GlobalHotKeys(mapping, **filter_kwargs)
+            self.listener.start()
+        except Exception:
             try:
-                self.listener = keyboard.GlobalHotKeys(mapping)
+                self.listener = keyboard.GlobalHotKeys(
+                    {"<print_screen>": emit, "<ctrl>+<alt>+s": emit}
+                )
                 self.listener.start()
-                break
             except Exception:
-                continue
+                pass
 
     def capture(self):
         if self.overlay is not None:
