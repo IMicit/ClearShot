@@ -13,7 +13,7 @@ Capturador de pantalla para Windows estilo Lightshot, **sin pérdida de calidad*
 - **Carpeta de guardado fija:** el botón **Guardar** siempre va a la carpeta que elijas (por defecto `Imágenes\ClearShot`), sin diálogos innecesarios.
 - **Anotaciones libres (estilo Lightshot):** dibuja con total libertad dentro o fuera de la selección (apuntes, flechas, etc.); al guardar o copiar, se exporta estrictamente el área seleccionada original.
 - **Notificación clickeable:** al guardar, haz clic en la notificación de Windows para abrir la captura inmediatamente.
-- **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider o rueda del ratón para el grosor.
+- **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider, botones `- / +` o rueda del ratón para el grosor.
 - **Selección ajustable:** mueve y redimensiona con 8 tiradores, con una lupa 8x que muestra coordenadas y color HEX bajo el cursor.
 - **Ligero:** vive en la bandeja del sistema e inicia con Windows. El atajo usa `RegisterHotKey` de Windows (sin hook de teclado), así que en reposo no consume CPU.
 
@@ -103,7 +103,7 @@ Si necesitas elegir nombre, carpeta o formato (PNG, JPG, BMP) solo para una capt
 | `Ctrl+Z` | Deshacer |
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Rehacer |
 | `1` a `9` | Elegir color de la paleta |
-| Rueda del ratón | Cambiar grosor |
+| `-` / `+` o rueda del ratón | Cambiar grosor |
 | `Shift` al dibujar | Líneas rectas / formas cuadradas |
 | Clic derecho | Descartar la selección |
 | `Esc` | Cancelar |

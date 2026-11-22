@@ -67,6 +67,10 @@ QSlider::groove:horizontal {{ height:4px; background:#343845; border-radius:2px;
 QSlider::sub-page:horizontal {{ background:{ACCENT}; border-radius:2px; }}
 QSlider::handle:horizontal {{ background:white; width:14px; height:14px;
                               margin:-5px 0; border-radius:7px; }}
+QFrame#wstep {{ background:#232630; border:1px solid #343845; border-radius:7px; }}
+QToolButton#wminus, QToolButton#wplus {{ border-radius:5px; padding:0px; }}
+QToolButton#wminus:hover, QToolButton#wplus:hover {{ background:#323746; }}
+QToolButton#wminus:pressed, QToolButton#wplus:pressed {{ background:{ACCENT}; }}
 """
 
 
@@ -240,6 +244,11 @@ def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
     elif key == "close":
         p.drawLine(QPointF(6, 6), QPointF(16, 16))
         p.drawLine(QPointF(16, 6), QPointF(6, 16))
+    elif key == "minus":
+        p.drawLine(QPointF(6, 11), QPointF(16, 11))
+    elif key == "plus":
+        p.drawLine(QPointF(6, 11), QPointF(16, 11))
+        p.drawLine(QPointF(11, 6), QPointF(11, 16))
     p.end()
     return QIcon(pm)
 
@@ -614,11 +623,40 @@ class Overlay(QWidget):
         self.wslider = QSlider(Qt.Orientation.Horizontal)
         self.wslider.setRange(1, 20)
         self.wslider.setValue(self.pen_w)
-        self.wslider.setFixedWidth(120)
+        self.wslider.setFixedWidth(110)
         self.wslider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.wslider.setToolTip("Grosor del trazo (también con la rueda del ratón)")
+        self.wslider.setToolTip("Grosor del trazo (también con - / + o la rueda del ratón)")
         self.wslider.valueChanged.connect(self._set_width)
         r2.addWidget(self.wslider)
+        r2.addSpacing(4)
+        wstep = QFrame()
+        wstep.setObjectName("wstep")
+        ws_lay = QHBoxLayout(wstep)
+        ws_lay.setContentsMargins(2, 2, 2, 2)
+        ws_lay.setSpacing(1)
+        self.wminus_btn = self._tbtn("minus", "Disminuir grosor  (-)")
+        self.wminus_btn.setObjectName("wminus")
+        self.wminus_btn.setFixedSize(24, 22)
+        self.wminus_btn.setIconSize(QSize(16, 16))
+        self.wminus_btn.setAutoRepeat(True)
+        self.wminus_btn.setAutoRepeatDelay(300)
+        self.wminus_btn.setAutoRepeatInterval(60)
+        self.wminus_btn.clicked.connect(lambda: self.wslider.setValue(self.pen_w - 1))
+        wsep = _sep()
+        wsep.setFixedSize(1, 14)
+        self.wplus_btn = self._tbtn("plus", "Aumentar grosor  (+)")
+        self.wplus_btn.setObjectName("wplus")
+        self.wplus_btn.setFixedSize(24, 22)
+        self.wplus_btn.setIconSize(QSize(16, 16))
+        self.wplus_btn.setAutoRepeat(True)
+        self.wplus_btn.setAutoRepeatDelay(300)
+        self.wplus_btn.setAutoRepeatInterval(60)
+        self.wplus_btn.clicked.connect(lambda: self.wslider.setValue(self.pen_w + 1))
+        ws_lay.addWidget(self.wminus_btn)
+        ws_lay.addWidget(wsep)
+        ws_lay.addWidget(self.wplus_btn)
+        r2.addWidget(wstep)
+        r2.addSpacing(4)
         self.wlabel = QLabel()
         self.wlabel.setFixedWidth(34)
         r2.addWidget(self.wlabel)
@@ -660,9 +698,11 @@ class Overlay(QWidget):
         self.update()
 
     def _set_width(self, v):
-        self.pen_w = int(v)
+        self.pen_w = max(1, min(20, int(v)))
         self.wlabel.setText(f"{self.pen_w} px")
         self.dot.set(self.pen_color, self.pen_w)
+        self.wminus_btn.setEnabled(self.pen_w > 1)
+        self.wplus_btn.setEnabled(self.pen_w < 20)
         self._width_dirty = True       # se guarda al cerrar, no en cada paso del slider
 
     def _set_color(self, c):
@@ -1151,6 +1191,10 @@ class Overlay(QWidget):
                 self._set_tool(TOOL_KEYS[t])
             elif t.isdigit() and 1 <= int(t) <= len(PALETTE):
                 self._set_color(PALETTE[int(t) - 1])
+            elif t == "-" or k == Qt.Key.Key_Minus:
+                self.wslider.setValue(self.pen_w - 1)
+            elif t == "+" or k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self.wslider.setValue(self.pen_w + 1)
 
     # ---------- acciones ----------
     def undo(self):
