@@ -30,6 +30,29 @@ El instalador instala las dependencias, compila `ClearShot.exe`, lo copia a `%LO
 
 Para actualizar, vuelve a ejecutar `instalar.bat`: reemplaza la copia anterior.
 
+### Actualizar y sincronizar entre computadores (Notebook ↔ PC)
+
+- **Para bajar las últimas actualizaciones desde GitHub** en cualquier equipo:
+  ```bash
+  git pull
+  ```
+  Luego haz doble clic en **`instalar.bat`** para recompilar y actualizar el `ClearShot.exe` instalado en Windows.
+
+- **Para subir cambios nuevos a GitHub** después de editar el código:
+  ```bash
+  git add .
+  git commit -m "Descripción de los cambios"
+  git push
+  ```
+
+- **Si descargaste el proyecto como `.zip`** (`ClearShot-main`) y quieres conectarlo a Git sin borrar la carpeta:
+  ```bash
+  git init
+  git remote add origin https://github.com/IMicit/ClearShot.git
+  git fetch origin
+  git checkout -B main origin/main
+  ```
+
 ### Ejecutar sin instalar
 
 ```bash
