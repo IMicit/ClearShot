@@ -12,11 +12,12 @@ ClearShot - Capturador de pantalla estilo Lightshot, SIN pérdida de calidad.
 import math
 import sys
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
-from PyQt6.QtCore import (QDir, QLockFile, QObject, QPoint, QPointF, QRect,
-                          QRectF, QSettings, QSize, QStandardPaths, Qt, QUrl,
-                          pyqtSignal)
+from PyQt6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
+                          QPoint, QPointF, QRect, QRectF, QSettings, QSize,
+                          QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
                          QDesktopServices, QFont, QFontMetrics, QGuiApplication,
                          QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
@@ -70,8 +71,15 @@ QSlider::handle:horizontal {{ background:white; width:14px; height:14px;
 
 
 # ============================================================ configuración
+_settings: QSettings | None = None
+
+
 def cfg() -> QSettings:
-    return QSettings("ClearShot", "ClearShot")
+    """Instancia única de QSettings (antes se creaba una nueva en cada llamada)."""
+    global _settings
+    if _settings is None:
+        _settings = QSettings("ClearShot", "ClearShot")
+    return _settings
 
 
 def default_dir() -> Path:
@@ -142,8 +150,10 @@ def make_icon() -> QIcon:
     return icon
 
 
+@lru_cache(maxsize=None)
 def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
-    """Iconos de la barra, dibujados en vectorial (nítidos en HiDPI)."""
+    """Iconos de la barra, dibujados en vectorial (nítidos en HiDPI).
+    Se cachean: así el overlay no los vuelve a dibujar en cada captura."""
     pm = QPixmap(44, 44)
     pm.setDevicePixelRatio(2)
     pm.fill(Qt.GlobalColor.transparent)
@@ -235,6 +245,7 @@ def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
 
 
 # ============================================================ anotaciones
+@lru_cache(maxsize=64)
 def _font(size: int, bold: bool = True) -> QFont:
     f = QFont("Segoe UI")
     f.setPixelSize(size)
@@ -242,6 +253,11 @@ def _font(size: int, bold: bool = True) -> QFont:
     f.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.PreferQuality)
     f.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
     return f
+
+
+@lru_cache(maxsize=64)
+def _fm(size: int, bold: bool = True) -> QFontMetrics:
+    return QFontMetrics(_font(size, bold))
 
 
 def _pen(color, width, cap=Qt.PenCapStyle.RoundCap) -> QPen:
@@ -258,16 +274,36 @@ def _draw_mosaic(p: QPainter, a: dict, img: QImage, dpr: float):
     src = src.intersected(QRect(0, 0, img.width(), img.height()))
     if src.width() < 2 or src.height() < 2:
         return
-    sub = img.copy(src)
     block = max(6, round(9 * dpr))
-    small = sub.scaled(max(1, src.width() // block), max(1, src.height() // block),
-                       Qt.AspectRatioMode.IgnoreAspectRatio,
-                       Qt.TransformationMode.SmoothTransformation)
-    big = small.scaled(src.width(), src.height(),
-                       Qt.AspectRatioMode.IgnoreAspectRatio,
-                       Qt.TransformationMode.FastTransformation)
+    # El pixelado se calcula una sola vez por zona y se reutiliza en cada repintado
+    key = (src.x(), src.y(), src.width(), src.height(), block)
+    cached = a.get("_mosaic")
+    if cached is not None and cached[0] == key:
+        big = cached[1]
+    else:
+        sub = img.copy(src)
+        small = sub.scaled(max(1, src.width() // block), max(1, src.height() // block),
+                           Qt.AspectRatioMode.IgnoreAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        big = small.scaled(src.width(), src.height(),
+                           Qt.AspectRatioMode.IgnoreAspectRatio,
+                           Qt.TransformationMode.FastTransformation)
+        a["_mosaic"] = (key, big)
     dest = QRectF(src.x() / dpr, src.y() / dpr, src.width() / dpr, src.height() / dpr)
     p.drawImage(dest, big)
+
+
+def _poly(a: dict) -> QPolygonF:
+    """Polígono del trazo, construido de forma incremental (no en cada cuadro)."""
+    poly = a.get("_poly")
+    pts = a["points"]
+    if poly is None or poly.count() > len(pts):
+        poly = QPolygonF(pts)
+    else:
+        for i in range(poly.count(), len(pts)):
+            poly.append(pts[i])
+    a["_poly"] = poly
+    return poly
 
 
 def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
@@ -282,7 +318,7 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
             f = _font(a["size"], bold=True)
             p.setFont(f)
             p.setPen(QColor(a["color"]))
-            fm = QFontMetrics(f)
+            fm = _fm(a["size"], True)
             p.drawText(QRectF(a["pos"].x() + 3, a["pos"].y() + 3, 4000, fm.height() + 8),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, a["text"])
         elif t == "step":
@@ -303,7 +339,7 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
             p.setPen(_pen(col, max(12, w * 3.5), Qt.PenCapStyle.FlatCap))
             p.setBrush(Qt.BrushStyle.NoBrush)
             if len(a["points"]) > 1:
-                p.drawPolyline(QPolygonF(a["points"]))
+                p.drawPolyline(_poly(a))
         else:
             p.setPen(_pen(a["color"], w))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -312,7 +348,7 @@ def draw_annotation(p: QPainter, a: dict, img: QImage, dpr: float):
                 if len(pts) == 1:
                     p.drawPoint(pts[0])
                 else:
-                    p.drawPolyline(QPolygonF(pts))
+                    p.drawPolyline(_poly(a))
             elif t == "rect":
                 p.drawRect(QRectF(a["p1"], a["p2"]).normalized())
             elif t == "ellipse":
@@ -437,10 +473,18 @@ class Overlay(QWidget):
 
     def __init__(self, pixmap: QPixmap, screen):
         super().__init__()
-        self.pm = pixmap                       # píxeles físicos (calidad completa)
         self.dpr = pixmap.devicePixelRatio()
-        self.img = pixmap.toImage()            # copia en píxeles físicos para recortes
+        # Una sola copia en píxeles físicos (calidad completa): se usa para pintar,
+        # recortar, la lupa y el pixelado. No se guarda el QPixmap original.
+        self.img = pixmap.toImage()
         self.img.setDevicePixelRatio(1.0)
+        # Fondo oscurecido precalculado UNA vez (antes se oscurecía en cada cuadro)
+        self.dim = self.img.copy()
+        q = QPainter(self.dim)
+        q.fillRect(self.dim.rect(), QColor(0, 0, 0, 120))
+        q.end()
+        self.dim.setDevicePixelRatio(self.dpr)
+        self._layer: QImage | None = None      # caché de anotaciones terminadas
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool)
@@ -466,8 +510,11 @@ class Overlay(QWidget):
         self.text_color = "#ffffff"
         self._closing = False
         self.mouse = QPointF(QCursor.pos() - screen.geometry().topLeft())
+        # El overlay pinta todos sus píxeles: Qt no necesita borrar el fondo antes
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
         self._build_toolbar()
+        self._width_dirty = False
 
     # ---------- UI ----------
     def _tbtn(self, icon_key: str, tip: str, checkable=False) -> QToolButton:
@@ -583,7 +630,7 @@ class Overlay(QWidget):
         self._sync_swatches()
         self._set_width(self.pen_w)
         self._refresh_folder_tips()
-        self._refresh_undo()
+        self._annots_changed()
         self.row2.setVisible(self.tool != "select")
         self.bar.hide()
 
@@ -596,6 +643,11 @@ class Overlay(QWidget):
     def _refresh_undo(self):
         self.undo_btn.setEnabled(bool(self.annots))
         self.redo_btn.setEnabled(bool(self.redo_stack))
+
+    def _annots_changed(self):
+        """Llamar cada vez que cambia la lista de anotaciones terminadas."""
+        self._layer = None
+        self._refresh_undo()
 
     # ---------- estado: herramienta / color / grosor ----------
     def _set_tool(self, k):
@@ -611,8 +663,7 @@ class Overlay(QWidget):
         self.pen_w = int(v)
         self.wlabel.setText(f"{self.pen_w} px")
         self.dot.set(self.pen_color, self.pen_w)
-        s = cfg()
-        s.setValue("width", self.pen_w)
+        self._width_dirty = True       # se guarda al cerrar, no en cada paso del slider
 
     def _set_color(self, c):
         self.pen_color = QColor(c).name()
@@ -704,10 +755,71 @@ class Overlay(QWidget):
         self.setCursor(cur)
 
     # ---------- dibujo ----------
+    def _annot_layer(self) -> QImage:
+        """Anotaciones terminadas pre-renderizadas en una capa (resolución física).
+        Se rehace solo cuando cambia la lista, no en cada movimiento del ratón."""
+        if self._layer is None:
+            layer = QImage(self.img.size(), QImage.Format.Format_ARGB32_Premultiplied)
+            layer.fill(Qt.GlobalColor.transparent)
+            layer.setDevicePixelRatio(self.dpr)
+            q = QPainter(layer)
+            q.setRenderHints(QPainter.RenderHint.Antialiasing |
+                             QPainter.RenderHint.TextAntialiasing |
+                             QPainter.RenderHint.SmoothPixmapTransform)
+            for a in self.annots:
+                draw_annotation(q, a, self.img, self.dpr)
+            q.end()
+            self._layer = layer
+        return self._layer
+
+    def _label_geom(self, s: QRect):
+        label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
+        lw = _fm(12, False).horizontalAdvance(label) + 16
+        ly = s.top() - 26 if s.top() > 30 else s.top() + 6
+        lx = s.left() if s.top() > 30 else s.left() + 6
+        return QRectF(lx, ly, lw, 20), label
+
+    def _mag_visible(self) -> bool:
+        d = self.drag
+        return self.sel is None or bool(d and d["mode"] in ("new", "resize"))
+
+    def _mag_geom(self, pos: QPointF):
+        size, info_h = 120, 40
+        ox, oy = pos.x() + 24, pos.y() + 24
+        if ox + size + 4 > self.width():
+            ox = pos.x() - 24 - size
+        if oy + size + info_h + 8 > self.height():
+            oy = pos.y() - 24 - size - info_h - 8
+        return QRectF(ox, oy, size, size), QRectF(ox, oy + size + 6, size, info_h)
+
+    # Zonas que hay que repintar (en vez de repintar la pantalla completa)
+    def _sel_bounds(self) -> QRectF | None:
+        if not self.sel:
+            return None
+        r = QRectF(self.sel).adjusted(-7, -7, 8, 8)
+        return r.united(self._label_geom(self.sel)[0].adjusted(-2, -2, 2, 2))
+
+    def _mag_bounds(self) -> QRectF | None:
+        if not self._mag_visible():
+            return None
+        rect, panel = self._mag_geom(self.mouse)
+        return rect.united(panel).adjusted(-3, -3, 3, 3)
+
+    @staticmethod
+    def _annot_bounds(a: dict, tail: bool = False) -> QRectF:
+        m = 16 + a.get("width", 3) * 4          # cubre grosor, puntas de flecha, etc.
+        if "points" in a:
+            pts = a["points"][-2:] if tail else a["points"]
+            r = QPolygonF(pts).boundingRect()
+        else:
+            r = QRectF(a["p1"], a["p2"]).normalized()
+        return r.adjusted(-m, -m, m, m)
+
     def paintEvent(self, _):
+        # Qt recorta automáticamente al área sucia: si solo cambió la lupa,
+        # solo se procesan esos píxeles.
         p = QPainter(self)
-        p.drawPixmap(self.rect(), self.pm)
-        p.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        p.drawImage(QPointF(0, 0), self.dim)
         p.setRenderHints(QPainter.RenderHint.Antialiasing |
                          QPainter.RenderHint.TextAntialiasing |
                          QPainter.RenderHint.SmoothPixmapTransform)
@@ -715,10 +827,12 @@ class Overlay(QWidget):
             s = self.sel
             src = QRectF(s.x() * self.dpr, s.y() * self.dpr,
                          s.width() * self.dpr, s.height() * self.dpr)
-            p.drawPixmap(QRectF(s), self.pm, src)
+            p.drawImage(QRectF(s), self.img, src)
             # Sin clip: las anotaciones pueden extenderse fuera del área seleccionada
-            for a in self.annots + ([self.cur] if self.cur else []):
-                draw_annotation(p, a, self.img, self.dpr)
+            if self.annots:
+                p.drawImage(QPointF(0, 0), self._annot_layer())
+            if self.cur:
+                draw_annotation(p, self.cur, self.img, self.dpr)
 
             p.setPen(QPen(QColor(ACCENT), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -728,29 +842,24 @@ class Overlay(QWidget):
                 for x, y in self._handle_points().values():
                     p.drawRoundedRect(QRectF(x - 4, y - 4, 8, 8), 2, 2)
 
-            f = _font(12, bold=False)
-            p.setFont(f)
-            label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
-            lw = QFontMetrics(f).horizontalAdvance(label) + 16
-            ly = s.top() - 26 if s.top() > 30 else s.top() + 6
-            lx = s.left() if s.top() > 30 else s.left() + 6
+            lrect, label = self._label_geom(s)
+            p.setFont(_font(12, bold=False))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(20, 22, 28, 220))
-            p.drawRoundedRect(QRectF(lx, ly, lw, 20), 6, 6)
+            p.drawRoundedRect(lrect, 6, 6)
             p.setPen(QColor("white"))
-            p.drawText(QRectF(lx, ly, lw, 20), Qt.AlignmentFlag.AlignCenter, label)
+            p.drawText(lrect, Qt.AlignmentFlag.AlignCenter, label)
         else:
             self._draw_hint(p)
 
-        d = self.drag
-        if self.sel is None or (d and d["mode"] in ("new", "resize")):
+        if self._mag_visible():
             self._draw_magnifier(p)
 
     def _draw_hint(self, p: QPainter):
         f = _font(14, bold=False)
         p.setFont(f)
         text = "Arrastra para seleccionar el área   ·   Esc para salir"
-        w = QFontMetrics(f).horizontalAdvance(text) + 32
+        w = _fm(14, False).horizontalAdvance(text) + 32
         r = QRectF((self.width() - w) / 2, 28, w, 36)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(20, 22, 28, 225))
@@ -760,23 +869,18 @@ class Overlay(QWidget):
 
     def _draw_magnifier(self, p: QPainter):
         pos = self.mouse
-        size, zoom, info_h = 120, 8, 40
+        size, zoom = 120, 8
         side = size / zoom * self.dpr
         cx, cy = pos.x() * self.dpr, pos.y() * self.dpr
         src = QRectF(cx - side / 2, cy - side / 2, side, side)
-        ox, oy = pos.x() + 24, pos.y() + 24
-        if ox + size + 4 > self.width():
-            ox = pos.x() - 24 - size
-        if oy + size + info_h + 8 > self.height():
-            oy = pos.y() - 24 - size - info_h - 8
-        rect = QRectF(ox, oy, size, size)
+        rect, panel = self._mag_geom(pos)
 
         p.save()
         path = QPainterPath()
         path.addRoundedRect(rect, 10, 10)
         p.setClipPath(path)
         p.fillRect(rect, QColor(0, 0, 0))
-        p.drawPixmap(rect, self.pm, src)
+        p.drawImage(rect, self.img, src)
         cell = size / (size / zoom)
         mid = QRectF(rect.center().x() - cell / 2, rect.center().y() - cell / 2, cell, cell)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -793,7 +897,6 @@ class Overlay(QWidget):
         ix = int(min(max(cx, 0), self.img.width() - 1))
         iy = int(min(max(cy, 0), self.img.height() - 1))
         col = self.img.pixelColor(ix, iy)
-        panel = QRectF(ox, oy + size + 6, size, info_h)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(20, 22, 28, 235))
         p.drawRoundedRect(panel, 8, 8)
@@ -816,7 +919,7 @@ class Overlay(QWidget):
         self.text_color = self.pen_color
         self.text_pos = QPointF(pos)
         f = _font(self.text_size, bold=True)
-        fm = QFontMetrics(f)
+        fm = _fm(self.text_size, True)
         e = TextEdit(self)
         e.setFont(f)
         e.setStyleSheet(
@@ -848,7 +951,7 @@ class Overlay(QWidget):
                                 "pos": self.text_pos, "text": txt,
                                 "size": self.text_size})
             self.redo_stack.clear()
-            self._refresh_undo()
+            self._annots_changed()
         self.setFocus()
         self.update()
 
@@ -863,7 +966,7 @@ class Overlay(QWidget):
                 self.annots.clear()
                 self.redo_stack.clear()
                 self.bar.hide()
-                self._refresh_undo()
+                self._annots_changed()
                 self.update()
             else:
                 self.cancel()
@@ -895,7 +998,7 @@ class Overlay(QWidget):
                     self.annots.append({"tool": "step", "color": self.pen_color,
                                         "width": self.pen_w, "pos": pos, "n": n})
                     self.redo_stack.clear()
-                    self._refresh_undo()
+                    self._annots_changed()
                 elif self.tool in ("pen", "marker"):
                     self.cur = {"tool": self.tool, "color": self.pen_color,
                                 "width": self.pen_w, "points": [pos]}
@@ -909,7 +1012,7 @@ class Overlay(QWidget):
         self.bar.hide()
         self.annots.clear()
         self.redo_stack.clear()
-        self._refresh_undo()
+        self._annots_changed()
         self.sel = None
         self.drag = {"mode": "new", "origin": ip}
         self.update()
@@ -917,10 +1020,15 @@ class Overlay(QWidget):
     def mouseMoveEvent(self, e):
         pos = e.position()
         ip = pos.toPoint()
-        self.mouse = pos
         if self.cur:
+            # Dibujando: solo se repinta el último tramo / la figura en curso
             c = self.cur
+            before = self._annot_bounds(c, tail=True)
+            self.mouse = pos
             if c["tool"] in ("pen", "marker"):
+                last = c["points"][-1]
+                if abs(pos.x() - last.x()) + abs(pos.y() - last.y()) < 1:
+                    return                     # movimiento sub-píxel: nada que dibujar
                 c["points"].append(pos)
             else:
                 p1, p2 = c["p1"], pos
@@ -936,7 +1044,16 @@ class Overlay(QWidget):
                     p2 = QPointF(p1.x() + math.copysign(m, dx or 1),
                                  p1.y() + math.copysign(m, dy or 1))
                 c["p2"] = p2
-        elif self.drag:
+            after = self._annot_bounds(c, tail=True)
+            self.update(before.united(after).toAlignedRect())
+            return
+
+        had_sel = bool(self.sel)
+        dirty = [self._mag_bounds()]
+        if self.drag:
+            dirty.append(self._sel_bounds())
+        self.mouse = pos
+        if self.drag:
             d = self.drag
             if d["mode"] == "new":
                 self.sel = QRect(d["origin"], ip).normalized().intersected(self.rect())
@@ -967,7 +1084,19 @@ class Overlay(QWidget):
                 self.sel = QRect(l, t, max(r - l, 1), max(b - t, 1))
         else:
             self._update_cursor(ip)
-        self.update()
+
+        if bool(self.sel) != had_sel:
+            self.update()                      # aparece/desaparece la pista superior
+            return
+        dirty.append(self._mag_bounds())
+        if self.drag:
+            dirty.append(self._sel_bounds())
+        dirty = [r for r in dirty if r is not None]
+        if dirty:                              # con selección y sin arrastre: nada
+            u = dirty[0]
+            for r in dirty[1:]:
+                u = u.united(r)
+            self.update(u.toAlignedRect())
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
@@ -984,7 +1113,7 @@ class Overlay(QWidget):
             if keep:
                 self.annots.append(a)
                 self.redo_stack.clear()
-                self._refresh_undo()
+                self._annots_changed()
         elif self.drag:
             mode = self.drag["mode"]
             self.drag = None
@@ -1028,13 +1157,13 @@ class Overlay(QWidget):
         self._commit_text()
         if self.annots:
             self.redo_stack.append(self.annots.pop())
-            self._refresh_undo()
+            self._annots_changed()
             self.update()
 
     def redo(self):
         if self.redo_stack:
             self.annots.append(self.redo_stack.pop())
-            self._refresh_undo()
+            self._annots_changed()
             self.update()
 
     def render_result(self):
@@ -1146,9 +1275,56 @@ class Overlay(QWidget):
         if self._closing:
             return
         self._closing = True
+        if self._width_dirty:
+            cfg().setValue("width", self.pen_w)
         self.hide()
         self.closed.emit()
         self.deleteLater()
+
+
+# ============================================================ atajos globales
+class WinHotkeys(QAbstractNativeEventFilter):
+    """Atajos globales con RegisterHotKey de Windows.
+
+    A diferencia de un hook de teclado (pynput), Windows solo avisa a la app
+    cuando se pulsa el atajo: costo cero en segundo plano, sin pasar cada tecla
+    del sistema por Python. Además Windows consume la tecla, así que Impr Pant
+    no dispara también la captura nativa."""
+    WM_HOTKEY = 0x0312
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+
+    def __init__(self, callback):
+        super().__init__()
+        import ctypes
+        from ctypes import wintypes
+        self._user32 = ctypes.windll.user32
+        self._user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int,
+                                                wintypes.UINT, wintypes.UINT]
+        self._user32.RegisterHotKey.restype = wintypes.BOOL
+        self._user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+        self._MSG = wintypes.MSG
+        self._callback = callback
+        self._ids: set[int] = set()
+
+    def register(self, hid: int, mods: int, vk: int) -> bool:
+        if self._user32.RegisterHotKey(None, hid, mods | self.MOD_NOREPEAT, vk):
+            self._ids.add(hid)
+            return True
+        return False
+
+    def unregister_all(self):
+        for hid in self._ids:
+            self._user32.UnregisterHotKey(None, hid)
+        self._ids.clear()
+
+    def nativeEventFilter(self, event_type, message):
+        if message and bytes(event_type) in (b"windows_dispatcher_MSG", b"windows_generic_MSG"):
+            msg = self._MSG.from_address(int(message))
+            if msg.message == self.WM_HOTKEY and msg.wParam in self._ids:
+                # Diferido: no abrir ventanas dentro del filtro de mensajes nativo
+                QTimer.singleShot(0, self._callback)
+                return True, 0
+        return False, 0
 
 
 # ============================================================ aplicación
@@ -1205,42 +1381,36 @@ class App(QObject):
         self.tray.setToolTip(f"ClearShot\nGuardando en: {d}")
 
     def _start_hotkeys(self):
+        emit = self.hotkey.emit
+        if sys.platform == "win32":
+            self._hk = WinHotkeys(emit)
+            QApplication.instance().installNativeEventFilter(self._hk)
+            QApplication.instance().aboutToQuit.connect(self._hk.unregister_all)
+            ok_prt = self._hk.register(1, 0, 0x2C)                     # Impr Pant
+            ok_alt = self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT,
+                                       ord("S"))                         # Ctrl+Alt+S
+            if not ok_prt and not ok_alt:
+                self.tray.showMessage(
+                    "ClearShot", "No se pudieron registrar los atajos globales "
+                    "(otro programa los está usando). Captura desde el icono de la bandeja.")
+            elif not ok_prt:
+                self.tray.showMessage(
+                    "ClearShot", "Impr Pant está en uso por otro programa o por Recortes "
+                    "de Windows. Usa Ctrl+Alt+S (ver README → Solución de problemas).")
+            return
+
+        # Otros sistemas: atajos con pynput
         try:
             from pynput import keyboard
         except ImportError:
             self.tray.showMessage("ClearShot", "Instala pynput para usar atajos globales.")
             return
-
-        emit = self.hotkey.emit
-
-        # En Windows interceptamos y suprimimos VK_SNAPSHOT (tecla Impr Pant / Print Screen)
-        # para evitar que Windows tome su propia captura completa al mismo tiempo.
-        filter_kwargs = {}
-        if sys.platform == "win32":
-            def win32_event_filter(msg, data):
-                if data.vkCode == 44:  # 44 = VK_SNAPSHOT (Impr Pant)
-                    if msg in (0x0100, 0x0104):  # WM_KEYDOWN, WM_SYSKEYDOWN
-                        emit()
-                    if hasattr(self, "listener") and self.listener:
-                        self.listener.suppress_event()
-                return True
-            filter_kwargs["win32_event_filter"] = win32_event_filter
-
-        mapping = {"<ctrl>+<alt>+s": emit}
-        if sys.platform != "win32":
-            mapping["<print_screen>"] = emit
-
         try:
-            self.listener = keyboard.GlobalHotKeys(mapping, **filter_kwargs)
+            self.listener = keyboard.GlobalHotKeys(
+                {"<print_screen>": emit, "<ctrl>+<alt>+s": emit})
             self.listener.start()
         except Exception:
-            try:
-                self.listener = keyboard.GlobalHotKeys(
-                    {"<print_screen>": emit, "<ctrl>+<alt>+s": emit}
-                )
-                self.listener.start()
-            except Exception:
-                pass
+            pass
 
     def capture(self):
         if self.overlay is not None:
@@ -1315,6 +1485,7 @@ def main():
         sys.exit(0)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(make_icon())
+    app.aboutToQuit.connect(lambda: cfg().sync())
     clearshot = App()  # noqa: F841 (mantener referencia)
     sys.exit(app.exec())
 

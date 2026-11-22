@@ -15,7 +15,7 @@ Capturador de pantalla para Windows estilo Lightshot, **sin pérdida de calidad*
 - **Notificación clickeable:** al guardar, haz clic en la notificación de Windows para abrir la captura inmediatamente.
 - **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider o rueda del ratón para el grosor.
 - **Selección ajustable:** mueve y redimensiona con 8 tiradores, con una lupa 8x que muestra coordenadas y color HEX bajo el cursor.
-- **Ligero:** vive en la bandeja del sistema e inicia con Windows sin consumir recursos en segundo plano.
+- **Ligero:** vive en la bandeja del sistema e inicia con Windows. El atajo usa `RegisterHotKey` de Windows (sin hook de teclado), así que en reposo no consume CPU.
 
 ## Instalación (Windows)
 
@@ -91,7 +91,7 @@ Si necesitas elegir nombre, carpeta o formato (PNG, JPG, BMP) solo para una capt
 En Windows 11 ve a *Configuración → Accesibilidad → Teclado* y desactiva *"Usar el botón Impr Pant para abrir el recorte de pantalla"*. También puedes usar `Ctrl+Alt+S`.
 
 **No funciona el atajo global.**
-Comprueba que `pynput` esté instalado (`pip install pynput`). Si otro programa usa el mismo atajo, usa el alternativo.
+En Windows, ClearShot registra los atajos con `RegisterHotKey`. Si otro programa (Greenshot, ShareX, Lightshot, Recortes…) ya usa `Impr Pant`, verás un aviso al iniciar: cierra ese programa o usa `Ctrl+Alt+S`. En macOS/Linux se usa `pynput` (`pip install pynput`).
 
 **Python no se encuentra al ejecutar `instalar.bat`.**
 Reinstala Python marcando **"Add python.exe to PATH"** y vuelve a ejecutar el archivo.
@@ -107,7 +107,9 @@ Es intencional: ClearShot permite una sola instancia a la vez para no duplicar e
 
 ## Desarrollo
 
-- **Stack:** Python + PyQt6 + pynput. Todo el código está en `clearshot.py`.
+- **Stack:** Python + PyQt6. Todo el código está en `clearshot.py`. Atajos globales con `RegisterHotKey` (Windows) o `pynput` (otros sistemas).
+- **Rendimiento:** el overlay repinta solo la zona que cambia (lupa, trazo en curso o selección), con el fondo oscurecido y las anotaciones terminadas precalculadas en caché.
+- **Compilación:** `instalar.bat` usa PyInstaller en modo `--onedir` (arranque rápido, sin descomprimir a una carpeta temporal en cada inicio).
 - **Configuración:** se guarda con `QSettings` (en Windows, en el registro bajo `HKCU\Software\ClearShot`).
 - Para generar el icono: `python clearshot.py --make-icon icon.ico`.
 

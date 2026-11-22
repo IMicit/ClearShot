@@ -29,16 +29,18 @@ if exist icon.ico del /q icon.ico
 %PY% clearshot.py --make-icon icon.ico
 set "ICONARG="
 if exist icon.ico set "ICONARG=--icon icon.ico"
-%PY% -m PyInstaller --noconsole --onefile --clean --noconfirm --name ClearShot %ICONARG% clearshot.py
+%PY% -m PyInstaller --noconsole --onedir --clean --noconfirm --name ClearShot --exclude-module pynput %ICONARG% clearshot.py
 if errorlevel 1 goto error
 
 echo.
 echo [3/4] Copiando a su ubicacion final...
 set "DEST=%LOCALAPPDATA%\ClearShot"
-if not exist "%DEST%" mkdir "%DEST%"
 taskkill /f /im ClearShot.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
-copy /y "dist\ClearShot.exe" "%DEST%\ClearShot.exe" >nul
+if exist "%DEST%\_internal" rmdir /s /q "%DEST%\_internal"
+if not exist "%DEST%" mkdir "%DEST%"
+xcopy "dist\ClearShot\*" "%DEST%\" /E /I /Y /Q >nul
+if errorlevel 1 goto error
 if exist desinstalar.bat copy /y "desinstalar.bat" "%DEST%\desinstalar.bat" >nul
 if errorlevel 1 goto error
 
