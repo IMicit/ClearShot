@@ -7,29 +7,56 @@ ClearShot - Capturador de pantalla estilo Lightshot, SIN pérdida de calidad.
   Se cambia desde la bandeja o desde el botón de carpeta de la barra.
 - Herramientas: área, lápiz, línea, flecha, rectángulo, elipse, resaltador,
   texto, números de paso y pixelado para ocultar datos.
+- Funciones Pro: fijar captura flotante en pantalla (F), extraer texto con OCR
+  nativo sin internet (O) y modo Fondo bonito con degradado y sombra (B).
 - Atajo global: Impr Pant (o Ctrl+Alt+S). Corre en la bandeja del sistema.
 """
 import math
+import os
+import subprocess
 import sys
+import tempfile
+import threading
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from PyQt6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
-                          QPoint, QPointF, QRect, QRectF, QSettings, QSize,
-                          QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
-from PyQt6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
-                         QDesktopServices, QFont, QFontMetrics, QGuiApplication,
-                         QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
-                         QPen, QPixmap, QPolygonF)
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup,
-                             QColorDialog, QFileDialog, QFrame, QHBoxLayout,
-                             QLabel, QLineEdit, QMenu, QSlider,
-                             QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
+# Soporta PySide6 (LGPLv3: uso comercial libre en Microsoft Store) y PyQt6
+try:
+    from PySide6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
+                                QPoint, QPointF, QRect, QRectF, QSettings, QSize,
+                                QStandardPaths, Qt, QTimer, QUrl, Signal as pyqtSignal)
+    from PySide6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
+                               QDesktopServices, QFont, QFontMetrics, QGuiApplication,
+                               QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
+                               QPen, QPixmap, QPolygonF)
+    from PySide6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup,
+                                   QColorDialog, QFileDialog, QFrame, QHBoxLayout,
+                                   QLabel, QLineEdit, QMenu, QSlider,
+                                   QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
+except ImportError:
+    from PyQt6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
+                              QPoint, QPointF, QRect, QRectF, QSettings, QSize,
+                              QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
+    from PyQt6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
+                             QDesktopServices, QFont, QFontMetrics, QGuiApplication,
+                             QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
+                             QPen, QPixmap, QPolygonF)
+    from PyQt6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup,
+                                 QColorDialog, QFileDialog, QFrame, QHBoxLayout,
+                                 QLabel, QLineEdit, QMenu, QSlider,
+                                 QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
 ACCENT = "#7C4DFF"
 PALETTE = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#00c2e0",
            "#1e90ff", "#af52de", "#ffffff", "#000000"]
+BEAUTIFY_THEMES = [
+    ("Violeta Cyber", "#7C4DFF", "#00C2E0"),
+    ("Atardecer", "#FF512F", "#DD2476"),
+    ("Océano", "#2193B0", "#6DD5ED"),
+    ("Esmeralda", "#11998E", "#38EF7D"),
+    ("Carbón", "#1F2229", "#3A3F4D"),
+]
 # (clave, nombre, atajo)
 TOOLS = [("select", "Área: seleccionar / mover", "V"),
          ("pen", "Lápiz", "P"),
@@ -249,6 +276,24 @@ def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
     elif key == "plus":
         p.drawLine(QPointF(6, 11), QPointF(16, 11))
         p.drawLine(QPointF(11, 6), QPointF(11, 16))
+    elif key == "pin":
+        # Chincheta / Pin
+        p.drawLine(QPointF(7, 4), QPointF(15, 4))
+        p.drawLine(QPointF(8, 4), QPointF(7, 11))
+        p.drawLine(QPointF(14, 4), QPointF(15, 11))
+        p.drawLine(QPointF(5, 11), QPointF(17, 11))
+        p.drawLine(QPointF(11, 11), QPointF(11, 18.5))
+    elif key == "ocr":
+        # Visor de reconocimiento de texto [T]
+        for x, y, dx, dy in ((4, 4, 1, 1), (18, 4, -1, 1), (4, 18, 1, -1), (18, 18, -1, -1)):
+            p.drawPolyline(QPolygonF([QPointF(x + dx * 3.5, y), QPointF(x, y), QPointF(x, y + dy * 3.5)]))
+        p.drawLine(QPointF(7.5, 7.5), QPointF(14.5, 7.5))
+        p.drawLine(QPointF(11, 7.5), QPointF(11, 15))
+    elif key == "beautify":
+        # Marco con destello (Fondo bonito)
+        p.drawRoundedRect(QRectF(3.5, 5, 15, 12), 2.5, 2.5)
+        p.drawLine(QPointF(11, 7.5), QPointF(11, 14.5))
+        p.drawLine(QPointF(7.5, 11), QPointF(14.5, 11))
     p.end()
     return QIcon(pm)
 
@@ -474,11 +519,274 @@ def _sep() -> QFrame:
     return f
 
 
+# ============================================================ funciones Pro
+def apply_beautifier(img: QImage, dpr: float, theme_idx: int = 0) -> QImage:
+    """Envuelve la captura en un marco de alta resolución con degradado,
+    esquinas redondeadas y sombra multicapa suave (100% sin pérdida)."""
+    _, c1, c2 = BEAUTIFY_THEMES[theme_idx % len(BEAUTIFY_THEMES)]
+    w, h = img.width(), img.height()
+    pad = max(round(36 * dpr), min(round(min(w, h) * 0.12), round(72 * dpr)))
+    rad = max(round(8 * dpr), min(round(12 * dpr), min(w, h) // 4))
+    out = QImage(w + pad * 2, h + pad * 2, QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(out)
+    p.setRenderHints(QPainter.RenderHint.Antialiasing |
+                     QPainter.RenderHint.SmoothPixmapTransform)
+
+    grad = QLinearGradient(0, 0, out.width(), out.height())
+    grad.setColorAt(0.0, QColor(c1))
+    grad.setColorAt(1.0, QColor(c2))
+    p.fillRect(out.rect(), grad)
+
+    card = QRectF(pad, pad, w, h)
+    # Sombra multicapa suave
+    p.setPen(Qt.PenStyle.NoPen)
+    for i in range(10, 0, -1):
+        spread = i * 2.2 * dpr
+        dy = i * 0.9 * dpr
+        alpha = int(38 * ((11 - i) / 10) ** 1.6)
+        p.setBrush(QColor(0, 0, 0, alpha))
+        p.drawRoundedRect(card.adjusted(-spread, -spread + dy, spread, spread + dy),
+                          rad + spread * 0.55, rad + spread * 0.55)
+
+    # Tarjeta con esquinas redondeadas
+    p.save()
+    clip = QPainterPath()
+    clip.addRoundedRect(card, rad, rad)
+    p.setClipPath(clip)
+    p.drawImage(QPointF(pad, pad), img)
+    p.restore()
+
+    # Borde sutil de cristal
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(QColor(255, 255, 255, 65), max(1.0, 1.0 * dpr)))
+    p.drawRoundedRect(card, rad, rad)
+    p.end()
+    return out
+
+
+_OCR_PS = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+})[0]
+function Await($op, $t) {
+    $m = $asTask.MakeGenericMethod($t)
+    $tk = $m.Invoke($null, @($op))
+    $tk.Wait(-1) | Out-Null
+    return $tk.Result
+}
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:CS_OCR_IMG)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bmp = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+$res = Await ($eng.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+$stream.Dispose()
+foreach ($line in $res.Lines) { Write-Output $line.Text }
+"""
+
+
+def run_windows_ocr(img: QImage) -> str:
+    """Extrae texto usando el motor OCR nativo de Windows (100% offline y gratis)."""
+    if sys.platform != "win32":
+        return ""
+    work = img
+    # Si el recorte es pequeño, escalar 2x y añadir margen mejora mucho la lectura
+    if work.width() < 200 or work.height() < 90:
+        work = work.scaled(work.width() * 2, work.height() * 2,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+    pad = 20
+    padded = QImage(work.width() + pad * 2, work.height() + pad * 2,
+                    QImage.Format.Format_RGB32)
+    padded.fill( work.pixelColor(0, 0) if not work.isNull() else QColor("white"))
+    p = QPainter(padded)
+    p.drawImage(pad, pad, work)
+    p.end()
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    try:
+        padded.save(tmp.name, "PNG")
+        env = os.environ.copy()
+        env["CS_OCR_IMG"] = tmp.name
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _OCR_PS],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            creationflags=flags, timeout=15)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+class PinnedWindow(QWidget):
+    """Captura flotante fijada siempre encima (Pin to screen)."""
+    closed = pyqtSignal(object)
+    saved = pyqtSignal(str)
+    message = pyqtSignal(str)
+    ocr_requested = pyqtSignal(QImage)
+
+    def __init__(self, img: QImage, pos: QPoint, dpr: float):
+        super().__init__()
+        self.raw_img = img
+        self.dpr = dpr
+        self.base_w = max(48, round(img.width() / dpr))
+        self.base_h = max(36, round(img.height() / dpr))
+        self.zoom = 1.0
+        self.opac = 1.0
+        self._drag_offset: QPoint | None = None
+        self._badge = ""
+        self._badge_timer = QTimer(self)
+        self._badge_timer.setSingleShot(True)
+        self._badge_timer.timeout.connect(self._clear_badge)
+
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
+                            Qt.WindowType.WindowStaysOnTopHint |
+                            Qt.WindowType.Tool)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip("Captura fijada (Pin)\n"
+                        "· Arrastrar: mover   · Doble clic / Ctrl+C: copiar\n"
+                        "· Rueda: zoom        · Ctrl+Rueda: opacidad\n"
+                        "· Clic derecho: menú · Esc: cerrar")
+        self.setGeometry(pos.x(), pos.y(), self.base_w, self.base_h)
+
+    def _flash(self, text: str):
+        self._badge = text
+        self._badge_timer.start(1100)
+        self.update()
+
+    def _clear_badge(self):
+        self._badge = ""
+        self.update()
+
+    def _set_zoom(self, z: float):
+        self.zoom = max(0.4, min(3.0, round(z, 2)))
+        self.resize(max(48, round(self.base_w * self.zoom)),
+                    max(36, round(self.base_h * self.zoom)))
+        self._flash(f"Zoom {round(self.zoom * 100)}%")
+
+    def _set_opac(self, o: float):
+        self.opac = max(0.25, min(1.0, round(o, 2)))
+        self.setWindowOpacity(self.opac)
+        self._flash(f"Opacidad {round(self.opac * 100)}%")
+
+    def copy_img(self):
+        QApplication.clipboard().setImage(self.raw_img)
+        self._flash("Copiada")
+
+    def save_img(self):
+        folder = get_save_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"captura_{datetime.now():%Y-%m-%d_%H-%M-%S}.png"
+            if self.raw_img.save(str(path), "PNG"):
+                self._flash("Guardada")
+                self.saved.emit(str(path))
+            else:
+                self.message.emit("No se pudo guardar la captura fijada")
+        except OSError:
+            self.message.emit("No se pudo acceder a la carpeta de capturas")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing |
+                         QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawImage(QRectF(self.rect()), self.raw_img)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(ACCENT), 2))
+        p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        if self._badge:
+            f = _font(11, bold=True)
+            p.setFont(f)
+            bw = _fm(11, True).horizontalAdvance(self._badge) + 18
+            r = QRectF(8, 8, bw, 22)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(20, 22, 28, 225))
+            p.drawRoundedRect(r, 6, 6)
+            p.setPen(QColor("white"))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self._badge)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
+        elif e.button() == Qt.MouseButton.RightButton:
+            self._show_menu(e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        if self._drag_offset is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+            self.move(e.globalPosition().toPoint() - self._drag_offset)
+            e.accept()
+
+    def mouseReleaseEvent(self, _):
+        self._drag_offset = None
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.copy_img()
+
+    def wheelEvent(self, e):
+        step = 1 if e.angleDelta().y() > 0 else -1
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._set_opac(self.opac + step * 0.1)
+        else:
+            self._set_zoom(self.zoom + step * 0.15)
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        ctrl = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if k == Qt.Key.Key_Escape:
+            self.close_pin()
+        elif (ctrl and k == Qt.Key.Key_C) or k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.copy_img()
+        elif ctrl and k == Qt.Key.Key_S:
+            self.save_img()
+        elif k == Qt.Key.Key_O:
+            self._flash("Extrayendo texto…")
+            self.ocr_requested.emit(self.raw_img)
+        elif k == Qt.Key.Key_0:
+            self._set_opac(1.0)
+            self._set_zoom(1.0)
+
+    def _show_menu(self, gpos: QPoint):
+        m = QMenu(self)
+        m.addAction("Copiar al portapapeles (Doble clic / Ctrl+C)", self.copy_img)
+        m.addAction("Guardar en carpeta (Ctrl+S)", self.save_img)
+        m.addAction("Extraer texto con OCR (O)", lambda: (
+            self._flash("Extrayendo texto…"), self.ocr_requested.emit(self.raw_img)))
+        m.addSeparator()
+        m.addAction("Tamaño original 100% (0)", lambda: self._set_zoom(1.0))
+        for pct in (100, 75, 50):
+            m.addAction(f"Opacidad {pct}%", lambda p=pct: self._set_opac(p / 100))
+        m.addSeparator()
+        m.addAction("Cerrar (Esc)", self.close_pin)
+        m.exec(gpos)
+
+    def close_pin(self):
+        self.hide()
+        self.closed.emit(self)
+        self.deleteLater()
+
+
 # ============================================================ overlay
 class Overlay(QWidget):
     closed = pyqtSignal()
     message = pyqtSignal(str)
     saved = pyqtSignal(str)   # emitida con la ruta completa al guardar con éxito
+    pinned = pyqtSignal(QImage, QPoint, float)
+    ocr_requested = pyqtSignal(QImage)
 
     def __init__(self, pixmap: QPixmap, screen):
         super().__init__()
@@ -506,6 +814,8 @@ class Overlay(QWidget):
         self.pen_color = QColor(s.value("color", PALETTE[0], type=str)).name()
         self.pen_w = max(1, min(20, s.value("width", 4, type=int)))
         self.custom_color = s.value("custom_color", "", type=str)
+        self.beautify = False
+        self.beautify_theme = s.value("beautify_theme", 0, type=int) % len(BEAUTIFY_THEMES)
 
         self.sel: QRect | None = None
         self.drag: dict | None = None
@@ -569,6 +879,24 @@ class Overlay(QWidget):
         self.redo_btn.clicked.connect(self.redo)
         row1.addWidget(self.undo_btn)
         row1.addWidget(self.redo_btn)
+        row1.addSpacing(6)
+        row1.addWidget(_sep())
+        row1.addSpacing(6)
+        self.beautify_btn = self._tbtn(
+            "beautify",
+            "Modo Fondo bonito con degradado y sombra  (B)\n"
+            "Cambiar estilo de fondo  (Shift+B o clic derecho)",
+            checkable=True)
+        self.beautify_btn.clicked.connect(self._toggle_beautify)
+        self.beautify_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.beautify_btn.customContextMenuRequested.connect(lambda _: self._cycle_beautify_theme())
+        self.pin_btn = self._tbtn("pin", "Fijar captura flotante en pantalla  (F)")
+        self.pin_btn.clicked.connect(self.pin_capture)
+        self.ocr_btn = self._tbtn("ocr", "Extraer texto de la imagen al portapapeles (OCR)  (O)")
+        self.ocr_btn.clicked.connect(self.ocr_capture)
+        row1.addWidget(self.beautify_btn)
+        row1.addWidget(self.pin_btn)
+        row1.addWidget(self.ocr_btn)
         row1.addSpacing(6)
         row1.addWidget(_sep())
         row1.addSpacing(6)
@@ -814,6 +1142,9 @@ class Overlay(QWidget):
 
     def _label_geom(self, s: QRect):
         label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
+        if self.beautify:
+            tname = BEAUTIFY_THEMES[self.beautify_theme][0]
+            label += f"  ·  Fondo: {tname} (Shift+B)"
         lw = _fm(12, False).horizontalAdvance(label) + 16
         ly = s.top() - 26 if s.top() > 30 else s.top() + 6
         lx = s.left() if s.top() > 30 else s.left() + 6
@@ -874,7 +1205,8 @@ class Overlay(QWidget):
             if self.cur:
                 draw_annotation(p, self.cur, self.img, self.dpr)
 
-            p.setPen(QPen(QColor(ACCENT), 1.5))
+            border_col = BEAUTIFY_THEMES[self.beautify_theme][1] if self.beautify else ACCENT
+            p.setPen(QPen(QColor(border_col), 2.0 if self.beautify else 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(QRectF(s))
             if not self.cur:
@@ -1189,6 +1521,16 @@ class Overlay(QWidget):
             t = e.text().lower()
             if t in TOOL_KEYS:
                 self._set_tool(TOOL_KEYS[t])
+            elif t == "b":
+                if shift:
+                    self._cycle_beautify_theme()
+                else:
+                    self.beautify_btn.toggle()
+                    self._toggle_beautify()
+            elif t == "f":
+                self.pin_capture()
+            elif t == "o":
+                self.ocr_capture()
             elif t.isdigit() and 1 <= int(t) <= len(PALETTE):
                 self._set_color(PALETTE[int(t) - 1])
             elif t == "-" or k == Qt.Key.Key_Minus:
@@ -1197,6 +1539,18 @@ class Overlay(QWidget):
                 self.wslider.setValue(self.pen_w + 1)
 
     # ---------- acciones ----------
+    def _toggle_beautify(self):
+        self.beautify = self.beautify_btn.isChecked()
+        self.update()
+
+    def _cycle_beautify_theme(self):
+        self.beautify_theme = (self.beautify_theme + 1) % len(BEAUTIFY_THEMES)
+        cfg().setValue("beautify_theme", self.beautify_theme)
+        if not self.beautify:
+            self.beautify = True
+            self.beautify_btn.setChecked(True)
+        self.update()
+
     def undo(self):
         self._commit_text()
         if self.annots:
@@ -1210,7 +1564,7 @@ class Overlay(QWidget):
             self._annots_changed()
             self.update()
 
-    def render_result(self):
+    def render_result(self, beautify: bool | None = None):
         """Recorta a resolución nativa y dibuja las anotaciones encima.
         Guarda estrictamente el área seleccionada, descartando lo que quede fuera."""
         self._commit_text()
@@ -1232,7 +1586,27 @@ class Overlay(QWidget):
             for a in self.annots:
                 draw_annotation(p, a, self.img, self.dpr)
             p.end()
+        use_b = self.beautify if beautify is None else beautify
+        if use_b:
+            img = apply_beautifier(img, self.dpr, self.beautify_theme)
         return img
+
+    def pin_capture(self):
+        """Deja la captura flotando siempre visible en pantalla (Pin to screen)."""
+        img = self.render_result()
+        if img is None or not self.sel:
+            return
+        gpos = self.mapToGlobal(self.sel.topLeft())
+        self.pinned.emit(img, gpos, self.dpr)
+        self.cancel()
+
+    def ocr_capture(self):
+        """Extrae el texto de la captura con OCR nativo y lo copia al portapapeles."""
+        img = self.render_result(beautify=False)
+        if img is None:
+            return
+        self.ocr_requested.emit(img)
+        self.cancel()
 
     def copy(self):
         img = self.render_result()
@@ -1374,11 +1748,14 @@ class WinHotkeys(QAbstractNativeEventFilter):
 # ============================================================ aplicación
 class App(QObject):
     hotkey = pyqtSignal()
+    ocr_done = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.overlay = None
+        self.pins: list[PinnedWindow] = []
         self._last_path: str | None = None   # última captura guardada (para abrir al clic)
+        self.ocr_done.connect(self._on_ocr_done)
         self.tray = QSystemTrayIcon(make_icon())
         menu = QMenu()
         self.a_dir = QAction("", menu)
@@ -1465,6 +1842,8 @@ class App(QObject):
         self.overlay.closed.connect(self._overlay_closed)
         self.overlay.message.connect(lambda m: self.tray.showMessage("ClearShot", m))
         self.overlay.saved.connect(self._on_saved)
+        self.overlay.pinned.connect(self._on_pinned)
+        self.overlay.ocr_requested.connect(self._start_ocr)
         self.overlay.show()
         self.overlay.raise_()
         self.overlay.activateWindow()
@@ -1473,6 +1852,32 @@ class App(QObject):
     def _overlay_closed(self):
         self.overlay = None
         self._refresh_menu()
+
+    def _on_pinned(self, img: QImage, gpos: QPoint, dpr: float):
+        pin = PinnedWindow(img, gpos, dpr)
+        pin.closed.connect(lambda w: self.pins.remove(w) if w in self.pins else None)
+        pin.saved.connect(self._on_saved)
+        pin.message.connect(lambda m: self.tray.showMessage("ClearShot", m))
+        pin.ocr_requested.connect(self._start_ocr)
+        self.pins.append(pin)
+        pin.show()
+        pin.raise_()
+        pin.activateWindow()
+
+    def _start_ocr(self, img: QImage):
+        def worker():
+            txt = run_windows_ocr(img)
+            self.ocr_done.emit(txt)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_ocr_done(self, txt: str):
+        if txt:
+            QApplication.clipboard().setText(txt)
+            preview = txt if len(txt) <= 120 else txt[:117] + "…"
+            self.tray.showMessage("ClearShot — Texto copiado (OCR)", preview)
+        else:
+            self.tray.showMessage("ClearShot — OCR",
+                                  "No se detectó texto reconocible en el área seleccionada.")
 
     def _on_saved(self, path: str):
         """Muestra notificación clickeable al guardar una captura."""

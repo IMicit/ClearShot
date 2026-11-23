@@ -13,6 +13,9 @@ Capturador de pantalla para Windows estilo Lightshot, **sin pérdida de calidad*
 - **Carpeta de guardado fija:** el botón **Guardar** siempre va a la carpeta que elijas (por defecto `Imágenes\ClearShot`), sin diálogos innecesarios.
 - **Anotaciones libres (estilo Lightshot):** dibuja con total libertad dentro o fuera de la selección (apuntes, flechas, etc.); al guardar o copiar, se exporta estrictamente el área seleccionada original.
 - **Notificación clickeable:** al guardar, haz clic en la notificación de Windows para abrir la captura inmediatamente.
+- **📌 Fijar en pantalla (*Pin to screen* — tecla `F`):** deja el recorte flotando siempre visible encima de cualquier ventana; muévelo arrastrando, haz zoom con la rueda del ratón o ajusta su opacidad con `Ctrl + rueda`.
+- **🔤 Extraer texto con OCR nativo (tecla `O`):** reconoce y copia al portapapeles el texto dentro de la selección usando el motor OCR nativo de Windows, 100% offline y en menos de un segundo.
+- **✨ Modo Fondo bonito (*Beautifier* — tecla `B` / `Shift+B`):** envuelve la captura en un marco de alta resolución con degradado moderno (5 temas incluidos), esquinas redondeadas y sombra suave.
 - **Colores y grosor:** paleta rápida (teclas 1-9), selector personalizado y slider, botones `- / +` o rueda del ratón para el grosor.
 - **Selección ajustable:** mueve y redimensiona con 8 tiradores, con una lupa 8x que muestra coordenadas y color HEX bajo el cursor.
 - **Ligero:** vive en la bandeja del sistema e inicia con Windows. El atajo usa `RegisterHotKey` de Windows (sin hook de teclado), así que en reposo no consume CPU.
@@ -100,6 +103,9 @@ Si necesitas elegir nombre, carpeta o formato (PNG, JPG, BMP) solo para una capt
 | `Ctrl+S` | Guardar en la carpeta configurada |
 | `Ctrl+Shift+C` | Guardar en carpeta **y** copiar al portapapeles a la vez |
 | `Ctrl+Shift+S` | Guardar como… (elegir carpeta/formato) |
+| `F` | **Fijar captura flotante en pantalla** (*Pin to screen*) |
+| `O` | **Extraer texto de la imagen al portapapeles** (OCR offline) |
+| `B` / `Shift+B` | Activar **Modo Fondo bonito** / Cambiar entre los 5 degradados |
 | `Ctrl+Z` | Deshacer |
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Rehacer |
 | `1` a `9` | Elegir color de la paleta |
