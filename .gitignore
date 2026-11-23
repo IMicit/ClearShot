@@ -8,6 +8,9 @@ build/
 dist/
 *.manifest
 *.spec
+*.msix
+store/msix_layout/
+store/partner_identity.json
 
 # Capturas de prueba
 Imagenes/

@@ -29,7 +29,7 @@ if exist icon.ico del /q icon.ico
 %PY% clearshot.py --make-icon icon.ico
 set "ICONARG="
 if exist icon.ico set "ICONARG=--icon icon.ico"
-%PY% -m PyInstaller --noconsole --onedir --clean --noconfirm --name ClearShot --exclude-module pynput %ICONARG% clearshot.py
+%PY% -m PyInstaller --noconsole --onedir --clean --noconfirm --name ClearShot --exclude-module PyQt6 --exclude-module pynput %ICONARG% clearshot.py
 if errorlevel 1 goto error
 
 echo.
