@@ -7,14 +7,14 @@
   IgnorableNamespaces="uap uap5 rescap">
 
   <Identity
-    Name="IMicit.ClearShot"
-    Publisher="CN=00000000-0000-0000-0000-000000000000"
+    Name="CristbalMuoz.ClearShotPro"
+    Publisher="CN=C6827F92-4142-476D-B093-94A5E19E14FA"
     Version="1.2.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>ClearShot</DisplayName>
-    <PublisherDisplayName>IMicit</PublisherDisplayName>
+    <DisplayName>ClearShot Pro</DisplayName>
+    <PublisherDisplayName>Cristóbal Muñoz</PublisherDisplayName>
     <Logo>assets\StoreLogo.png</Logo>
   </Properties>
 
@@ -29,9 +29,9 @@
   </Resources>
 
   <Applications>
-    <Application Id="ClearShot" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="ClearShotPro" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="ClearShot"
+        DisplayName="ClearShot Pro"
         Description="Capturador de pantalla sin pérdida de calidad con Pin en pantalla, OCR offline y Modo Fondo bonito."
         BackgroundColor="transparent"
         Square150x150Logo="assets\Square150x150Logo.png"
@@ -40,7 +40,7 @@
       </uap:VisualElements>
       <Extensions>
         <uap5:Extension Category="windows.startupTask" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
-          <uap5:StartupTask TaskId="ClearShotStartup" Enabled="true" DisplayName="ClearShot" />
+          <uap5:StartupTask TaskId="ClearShotStartup" Enabled="true" DisplayName="ClearShot Pro" />
         </uap5:Extension>
       </Extensions>
     </Application>

@@ -18,9 +18,9 @@ echo   Product management -^> Product identity
 echo Ahi veras los 3 datos exactos que pide la tienda (presiona Enter para usar el valor entre corchetes):
 echo.
 
-set "ID_NAME=IMicit.ClearShot"
-set "PUB_ID=CN=00000000-0000-0000-0000-000000000000"
-set "PUB_DISP=IMicit"
+set "ID_NAME=CristbalMuoz.ClearShotPro"
+set "PUB_ID=CN=C6827F92-4142-476D-B093-94A5E19E14FA"
+set "PUB_DISP=Cristóbal Muñoz"
 
 set /p "IN_NAME=1) Package/Identity/Name [%ID_NAME%]: "
 if not "%IN_NAME%"=="" set "ID_NAME=%IN_NAME%"

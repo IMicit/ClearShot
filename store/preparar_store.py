@@ -227,9 +227,10 @@ def generate_promotional_screenshots():
     s3.save(str(SHOTS_DIR / "03_pin_y_ocr_offline.png"), "PNG")
 
 
-def write_appx_manifest(identity_name: str = "IMicit.ClearShot",
-                        publisher_id: str = "CN=00000000-0000-0000-0000-000000000000",
-                        publisher_display: str = "IMicit",
+def write_appx_manifest(identity_name: str = "CristbalMuoz.ClearShotPro",
+                        publisher_id: str = "CN=C6827F92-4142-476D-B093-94A5E19E14FA",
+                        publisher_display: str = "Cristóbal Muñoz",
+                        display_name: str = "ClearShot Pro",
                         version: str = "1.2.0.0"):
     manifest = f"""<?xml version="1.0" encoding="utf-8"?>
 <Package
@@ -246,7 +247,7 @@ def write_appx_manifest(identity_name: str = "IMicit.ClearShot",
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>ClearShot</DisplayName>
+    <DisplayName>{display_name}</DisplayName>
     <PublisherDisplayName>{publisher_display}</PublisherDisplayName>
     <Logo>assets\\StoreLogo.png</Logo>
   </Properties>
@@ -262,9 +263,9 @@ def write_appx_manifest(identity_name: str = "IMicit.ClearShot",
   </Resources>
 
   <Applications>
-    <Application Id="ClearShot" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="ClearShotPro" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="ClearShot"
+        DisplayName="{display_name}"
         Description="Capturador de pantalla sin pérdida de calidad con Pin en pantalla, OCR offline y Modo Fondo bonito."
         BackgroundColor="transparent"
         Square150x150Logo="assets\\Square150x150Logo.png"
@@ -273,7 +274,7 @@ def write_appx_manifest(identity_name: str = "IMicit.ClearShot",
       </uap:VisualElements>
       <Extensions>
         <uap5:Extension Category="windows.startupTask" Executable="ClearShot.exe" EntryPoint="Windows.FullTrustApplication">
-          <uap5:StartupTask TaskId="ClearShotStartup" Enabled="true" DisplayName="ClearShot" />
+          <uap5:StartupTask TaskId="ClearShotStartup" Enabled="true" DisplayName="{display_name}" />
         </uap5:Extension>
       </Extensions>
     </Application>
@@ -316,13 +317,13 @@ def ensure_makeappx() -> Path:
 
 
 def build_msix(identity_name: str, publisher_id: str, publisher_display: str,
-               version: str = "1.2.0.0") -> Path:
+               display_name: str = "ClearShot Pro", version: str = "1.2.0.0") -> Path:
     """Empaqueta dist/ClearShot + AppxManifest.xml + assets en store/ClearShot.msix."""
     dist_dir = ROOT / "dist" / "ClearShot"
     if not (dist_dir / "ClearShot.exe").exists():
         raise FileNotFoundError("No se encontró dist/ClearShot/ClearShot.exe. Compila primero.")
 
-    write_appx_manifest(identity_name, publisher_id, publisher_display, version)
+    write_appx_manifest(identity_name, publisher_id, publisher_display, display_name, version)
     if MSIX_STAGE.exists():
         shutil.rmtree(MSIX_STAGE)
     shutil.copytree(dist_dir, MSIX_STAGE)
@@ -344,23 +345,25 @@ def main():
     generate_store_icons()
     generate_promotional_screenshots()
 
-    identity_name = "IMicit.ClearShot"
-    publisher_id = "CN=00000000-0000-0000-0000-000000000000"
-    publisher_display = "IMicit"
+    identity_name = "CristbalMuoz.ClearShotPro"
+    publisher_id = "CN=C6827F92-4142-476D-B093-94A5E19E14FA"
+    publisher_display = "Cristóbal Muñoz"
+    display_name = "ClearShot Pro"
     id_file = STORE_DIR / "partner_identity.json"
     if id_file.exists():
         cfg_data = json.loads(id_file.read_text(encoding="utf-8"))
         identity_name = cfg_data.get("identity_name", identity_name)
         publisher_id = cfg_data.get("publisher_id", publisher_id)
         publisher_display = cfg_data.get("publisher_display", publisher_display)
+        display_name = cfg_data.get("display_name", display_name)
 
-    write_appx_manifest(identity_name, publisher_id, publisher_display)
+    write_appx_manifest(identity_name, publisher_id, publisher_display, display_name)
     print("OK: Iconos de Microsoft Store generados en:", ASSETS_DIR)
     print("OK: 3 capturas promocionales Full HD (1920x1080) generadas en:", SHOTS_DIR)
     print("OK: AppxManifest.xml generado en:", STORE_DIR / "AppxManifest.xml")
 
     if "--pack" in sys.argv:
-        msix = build_msix(identity_name, publisher_id, publisher_display)
+        msix = build_msix(identity_name, publisher_id, publisher_display, display_name)
         print("OK: Paquete Microsoft Store generado en:", msix)
 
 
