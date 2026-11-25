@@ -23,9 +23,10 @@ from pathlib import Path
 
 # Soporta PySide6 (LGPLv3: uso comercial libre en Microsoft Store) y PyQt6
 try:
-    from PySide6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
-                                QPoint, QPointF, QRect, QRectF, QSettings, QSize,
-                                QStandardPaths, Qt, QTimer, QUrl, Signal as pyqtSignal)
+    from PySide6.QtCore import (QAbstractNativeEventFilter, QDir, QEvent, QLockFile,
+                                QObject, QPoint, QPointF, QRect, QRectF, QSettings,
+                                QSize, QStandardPaths, Qt, QTimer, QUrl,
+                                Signal as pyqtSignal)
     from PySide6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
                                QDesktopServices, QFont, QFontMetrics, QGuiApplication,
                                QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
@@ -35,9 +36,9 @@ try:
                                    QLabel, QLineEdit, QMenu, QSlider,
                                    QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 except ImportError:
-    from PyQt6.QtCore import (QAbstractNativeEventFilter, QDir, QLockFile, QObject,
-                              QPoint, QPointF, QRect, QRectF, QSettings, QSize,
-                              QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
+    from PyQt6.QtCore import (QAbstractNativeEventFilter, QDir, QEvent, QLockFile,
+                              QObject, QPoint, QPointF, QRect, QRectF, QSettings,
+                              QSize, QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
     from PyQt6.QtGui import (QAction, QColor, QConicalGradient, QCursor,
                              QDesktopServices, QFont, QFontMetrics, QGuiApplication,
                              QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
@@ -293,10 +294,22 @@ def tool_icon(key: str, color: str = "#e8e8ee") -> QIcon:
         p.drawLine(QPointF(7.5, 7.5), QPointF(14.5, 7.5))
         p.drawLine(QPointF(11, 7.5), QPointF(11, 15))
     elif key == "beautify":
-        # Marco con destello (Fondo bonito)
-        p.drawRoundedRect(QRectF(3.5, 5, 15, 12), 2.5, 2.5)
-        p.drawLine(QPointF(11, 7.5), QPointF(11, 14.5))
-        p.drawLine(QPointF(7.5, 11), QPointF(14.5, 11))
+        # Ruleta de colores con los colores base de la paleta
+        r = QRectF(3.5, 3.5, 15, 15)
+        g = QConicalGradient(r.center(), 90)
+        cols = PALETTE[:7]
+        for i, hx in enumerate(cols):
+            g.setColorAt(i / len(cols), QColor(hx))
+        g.setColorAt(1.0, QColor(cols[0]))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        path = QPainterPath()
+        path.addEllipse(r)
+        inner = QPainterPath()
+        inner.addEllipse(QRectF(7.2, 7.2, 7.6, 7.6))
+        p.drawPath(path.subtracted(inner))
+        p.setBrush(c)
+        p.drawEllipse(QPointF(11, 11), 1.8, 1.8)
     p.end()
     return QIcon(pm)
 
@@ -526,33 +539,49 @@ def _sep() -> QFrame:
 
 
 # ============================================================ funciones Pro
-def apply_beautifier(img: QImage, dpr: float, theme_idx: int = 0) -> QImage:
-    """Envuelve la captura en un marco de alta resolución con degradado,
-    esquinas redondeadas y sombra multicapa suave (100% sin pérdida)."""
-    _, c1, c2 = BEAUTIFY_THEMES[theme_idx % len(BEAUTIFY_THEMES)]
+def _gradient_pair(base_hex: str) -> tuple[QColor, QColor]:
+    """Genera un degradado armónico a partir del color base seleccionado en la paleta."""
+    c1 = QColor(base_hex)
+    h, s, v, _ = c1.getHsv()
+    if s < 35:  # blanco, gris o negro
+        if v > 180:
+            return QColor("#ffffff"), QColor("#cbd5e1")
+        return QColor("#272a34"), QColor("#111318")
+    c2 = QColor.fromHsv((h + 38) % 360, max(140, min(255, int(s * 0.92))),
+                        max(160, min(255, int(v * 1.05))))
+    return c1, c2
+
+
+def apply_beautifier(img: QImage, dpr: float, base_color: str = ACCENT) -> QImage:
+    """Envuelve la captura en un marco delgado y elegante con degradado del color
+    seleccionado, esquinas redondeadas y sombra sutil (100% sin pérdida)."""
+    if isinstance(base_color, int):
+        base_color = PALETTE[base_color % len(PALETTE)]
+    c1, c2 = _gradient_pair(base_color)
     w, h = img.width(), img.height()
-    pad = max(round(36 * dpr), min(round(min(w, h) * 0.12), round(72 * dpr)))
-    rad = max(round(8 * dpr), min(round(12 * dpr), min(w, h) // 4))
+    # Marco delgado y compacto (8 a 14 px lógicos, sin ser invasivo)
+    pad = max(round(8 * dpr), min(round(min(w, h) * 0.07), round(14 * dpr)))
+    rad = max(round(5 * dpr), min(round(8 * dpr), min(w, h) // 5))
     out = QImage(w + pad * 2, h + pad * 2, QImage.Format.Format_ARGB32_Premultiplied)
     p = QPainter(out)
     p.setRenderHints(QPainter.RenderHint.Antialiasing |
                      QPainter.RenderHint.SmoothPixmapTransform)
 
     grad = QLinearGradient(0, 0, out.width(), out.height())
-    grad.setColorAt(0.0, QColor(c1))
-    grad.setColorAt(1.0, QColor(c2))
+    grad.setColorAt(0.0, c1)
+    grad.setColorAt(1.0, c2)
     p.fillRect(out.rect(), grad)
 
     card = QRectF(pad, pad, w, h)
-    # Sombra multicapa suave
+    # Sombra suave y compacta (sin anillos oscuros gruesos)
     p.setPen(Qt.PenStyle.NoPen)
-    for i in range(10, 0, -1):
-        spread = i * 2.2 * dpr
-        dy = i * 0.9 * dpr
-        alpha = int(38 * ((11 - i) / 10) ** 1.6)
+    for i in range(4, 0, -1):
+        spread = i * 1.1 * dpr
+        dy = i * 0.45 * dpr
+        alpha = int(26 * (5 - i) / 4)
         p.setBrush(QColor(0, 0, 0, alpha))
         p.drawRoundedRect(card.adjusted(-spread, -spread + dy, spread, spread + dy),
-                          rad + spread * 0.55, rad + spread * 0.55)
+                          rad + spread * 0.4, rad + spread * 0.4)
 
     # Tarjeta con esquinas redondeadas
     p.save()
@@ -564,7 +593,7 @@ def apply_beautifier(img: QImage, dpr: float, theme_idx: int = 0) -> QImage:
 
     # Borde sutil de cristal
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.setPen(QPen(QColor(255, 255, 255, 65), max(1.0, 1.0 * dpr)))
+    p.setPen(QPen(QColor(255, 255, 255, 75), max(1.0, 1.0 * dpr)))
     p.drawRoundedRect(card, rad, rad)
     p.end()
     return out
@@ -637,21 +666,24 @@ def run_windows_ocr(img: QImage) -> str:
 
 
 class PinnedWindow(QWidget):
-    """Captura flotante fijada siempre encima (Pin to screen)."""
+    """Captura flotante fijada siempre encima (Pin to screen), limpia solo con borde."""
     closed = pyqtSignal(object)
     saved = pyqtSignal(str)
     message = pyqtSignal(str)
     ocr_requested = pyqtSignal(QImage)
 
-    def __init__(self, img: QImage, pos: QPoint, dpr: float):
+    def __init__(self, img: QImage, pos: QPoint, dpr: float, border_color: str = ACCENT):
         super().__init__()
         self.raw_img = img
         self.dpr = dpr
+        self.border_color = QColor(border_color).name()
         self.base_w = max(48, round(img.width() / dpr))
         self.base_h = max(36, round(img.height() / dpr))
         self.zoom = 1.0
         self.opac = 1.0
         self._drag_offset: QPoint | None = None
+        self._hover = False
+        self._close_hover = False
         self._badge = ""
         self._badge_timer = QTimer(self)
         self._badge_timer.setSingleShot(True)
@@ -660,13 +692,24 @@ class PinnedWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool)
+        self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setToolTip("Captura fijada (Pin)\n"
                         "· Arrastrar: mover   · Doble clic / Ctrl+C: copiar\n"
                         "· Rueda: zoom        · Ctrl+Rueda: opacidad\n"
-                        "· Clic derecho: menú · Esc: cerrar")
+                        "· B o 1-9: color     · Clic derecho: menú · Esc: cerrar")
         self.setGeometry(pos.x(), pos.y(), self.base_w, self.base_h)
+
+    def _close_rect(self) -> QRectF:
+        return QRectF(self.width() - 24, 4, 20, 20)
+
+    def cycle_border_color(self):
+        low = [c.lower() for c in PALETTE]
+        cur = self.border_color.lower()
+        idx = (low.index(cur) + 1) % len(PALETTE) if cur in low else 0
+        self.border_color = PALETTE[idx]
+        self.update()
 
     def _flash(self, text: str):
         self._badge = text
@@ -705,14 +748,31 @@ class PinnedWindow(QWidget):
         except OSError:
             self.message.emit("No se pudo acceder a la carpeta de capturas")
 
+    def enterEvent(self, _):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, _):
+        self._hover = False
+        self._close_hover = False
+        self.update()
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHints(QPainter.RenderHint.Antialiasing |
                          QPainter.RenderHint.SmoothPixmapTransform)
         p.drawImage(QRectF(self.rect()), self.raw_img)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(ACCENT), 2))
+        p.setPen(QPen(QColor(self.border_color), 2))
         p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        if self._hover:
+            cr = self._close_rect()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#dc2626") if self._close_hover else QColor(20, 22, 28, 210))
+            p.drawRoundedRect(cr, 5, 5)
+            p.setPen(QPen(QColor("white"), 1.6))
+            p.drawLine(QPointF(cr.left() + 6, cr.top() + 6), QPointF(cr.right() - 6, cr.bottom() - 6))
+            p.drawLine(QPointF(cr.right() - 6, cr.top() + 6), QPointF(cr.left() + 6, cr.bottom() - 6))
         if self._badge:
             f = _font(11, bold=True)
             p.setFont(f)
@@ -725,7 +785,12 @@ class PinnedWindow(QWidget):
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, self._badge)
 
     def mousePressEvent(self, e):
+        self.activateWindow()
+        self.setFocus()
         if e.button() == Qt.MouseButton.LeftButton:
+            if self._close_rect().contains(e.position()):
+                self.close_pin()
+                return
             self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
             e.accept()
         elif e.button() == Qt.MouseButton.RightButton:
@@ -735,12 +800,19 @@ class PinnedWindow(QWidget):
         if self._drag_offset is not None and (e.buttons() & Qt.MouseButton.LeftButton):
             self.move(e.globalPosition().toPoint() - self._drag_offset)
             e.accept()
+            return
+        hov = self._close_rect().contains(e.position())
+        if hov != self._close_hover:
+            self._close_hover = hov
+            self.setCursor(Qt.CursorShape.PointingHandCursor if hov
+                           else Qt.CursorShape.SizeAllCursor)
+            self.update()
 
     def mouseReleaseEvent(self, _):
         self._drag_offset = None
 
     def mouseDoubleClickEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
+        if e.button() == Qt.MouseButton.LeftButton and not self._close_rect().contains(e.position()):
             self.copy_img()
 
     def wheelEvent(self, e):
@@ -753,6 +825,7 @@ class PinnedWindow(QWidget):
     def keyPressEvent(self, e):
         k = e.key()
         ctrl = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        t = e.text().lower()
         if k == Qt.Key.Key_Escape:
             self.close_pin()
         elif (ctrl and k == Qt.Key.Key_C) or k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -762,6 +835,11 @@ class PinnedWindow(QWidget):
         elif k == Qt.Key.Key_O:
             self._flash("Extrayendo texto…")
             self.ocr_requested.emit(self.raw_img)
+        elif t == "b":
+            self.cycle_border_color()
+        elif not ctrl and t.isdigit() and 1 <= int(t) <= len(PALETTE):
+            self.border_color = PALETTE[int(t) - 1]
+            self.update()
         elif k == Qt.Key.Key_0:
             self._set_opac(1.0)
             self._set_zoom(1.0)
@@ -772,6 +850,7 @@ class PinnedWindow(QWidget):
         m.addAction("Guardar en carpeta (Ctrl+S)", self.save_img)
         m.addAction("Extraer texto con OCR (O)", lambda: (
             self._flash("Extrayendo texto…"), self.ocr_requested.emit(self.raw_img)))
+        m.addAction("Siguiente color de borde (B)", self.cycle_border_color)
         m.addSeparator()
         m.addAction("Tamaño original 100% (0)", lambda: self._set_zoom(1.0))
         for pct in (100, 75, 50):
@@ -791,8 +870,9 @@ class Overlay(QWidget):
     closed = pyqtSignal()
     message = pyqtSignal(str)
     saved = pyqtSignal(str)   # emitida con la ruta completa al guardar con éxito
-    pinned = pyqtSignal(QImage, QPoint, float)
+    pinned = pyqtSignal(QImage, QPoint, float, str)
     ocr_requested = pyqtSignal(QImage)
+    dialog_active = pyqtSignal(bool)
 
     def __init__(self, pixmap: QPixmap, screen):
         super().__init__()
@@ -841,6 +921,21 @@ class Overlay(QWidget):
 
         self._build_toolbar()
         self._width_dirty = False
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        """Filtro de aplicación: garantiza que Esc funcione aunque el foco esté
+        en cualquier botón, slider o sub-widget del overlay."""
+        if not self._closing and ev.type() == QEvent.Type.KeyPress:
+            if ev.key() == Qt.Key.Key_Escape:
+                if self.text_edit is not None and self.text_edit.isVisible():
+                    was_empty = not self.text_edit.text().strip()
+                    self.text_edit.clear()
+                    self._on_text_escaped(was_empty)
+                else:
+                    self.cancel()
+                return True
+        return False
 
     # ---------- UI ----------
     def _tbtn(self, icon_key: str, tip: str, checkable=False) -> QToolButton:
@@ -891,13 +986,15 @@ class Overlay(QWidget):
         row1.addSpacing(6)
         self.beautify_btn = self._tbtn(
             "beautify",
-            "Modo Fondo bonito con degradado y sombra  (B)\n"
-            "Cambiar estilo de fondo  (Shift+B o clic derecho)",
+            "Ruleta de Fondo bonito  (B)\n"
+            "· Clic o B: activar / siguiente color de la paleta en loop\n"
+            "· Elegir color abajo (1-9): cambia al color y sigue el loop desde ahí\n"
+            "· Clic derecho o Shift+B: quitar fondo bonito",
             checkable=True)
-        self.beautify_btn.clicked.connect(self._toggle_beautify)
+        self.beautify_btn.clicked.connect(self._on_beautify_clicked)
         self.beautify_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.beautify_btn.customContextMenuRequested.connect(lambda _: self._cycle_beautify_theme())
-        self.pin_btn = self._tbtn("pin", "Fijar captura flotante en pantalla  (F)")
+        self.beautify_btn.customContextMenuRequested.connect(lambda _: self._disable_beautify())
+        self.pin_btn = self._tbtn("pin", "Fijar captura flotante en pantalla (solo borde)  (F)")
         self.pin_btn.clicked.connect(self.pin_capture)
         self.ocr_btn = self._tbtn("ocr", "Extraer texto de la imagen al portapapeles (OCR)  (O)")
         self.ocr_btn.clicked.connect(self.ocr_capture)
@@ -926,19 +1023,6 @@ class Overlay(QWidget):
             row1.addWidget(b)
             setattr(self, name + "_btn", b)
         self.copy_btn.setToolTip("Copiar al portapapeles  (Enter / Ctrl+C)\nGuardar y copiar  (Ctrl+Shift+C)")
-        row1.addSpacing(2)
-        self.close_btn = QToolButton()
-        self.close_btn.setObjectName("close")
-        self.close_btn.setText("Salir (Esc)")
-        self.close_btn.setIcon(tool_icon("close", "#ffffff"))
-        self.close_btn.setIconSize(QSize(18, 18))
-        self.close_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.close_btn.setFixedHeight(34)
-        self.close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.close_btn.setToolTip("Salir de la captura  (Esc / Clic derecho)")
-        self.close_btn.clicked.connect(self.cancel)
-        row1.addWidget(self.close_btn)
         root.addLayout(row1)
 
         # ---- barra superior permanente con botón real "✕ Salir (Esc)"
@@ -1041,7 +1125,7 @@ class Overlay(QWidget):
         self._set_width(self.pen_w)
         self._refresh_folder_tips()
         self._annots_changed()
-        self.row2.setVisible(self.tool != "select")
+        self.row2.setVisible(True)
         self.bar.hide()
 
     def _refresh_folder_tips(self):
@@ -1064,7 +1148,6 @@ class Overlay(QWidget):
         self._commit_text()
         self.tool = k
         self.tool_btns[k].setChecked(True)
-        self.row2.setVisible(k != "select")
         if self.sel:
             self._place_bar()
         self.update()
@@ -1082,6 +1165,7 @@ class Overlay(QWidget):
         cfg().setValue("color", self.pen_color)
         self._sync_swatches()
         self.dot.set(self.pen_color, self.pen_w)
+        self.update()
 
     def _sync_swatches(self):
         target = None
@@ -1097,22 +1181,28 @@ class Overlay(QWidget):
 
     def _pick_swatch(self, sw: Swatch):
         if sw is self.custom_sw:
-            c = QColorDialog.getColor(QColor(self.pen_color), self, "Elige un color")
+            self.dialog_active.emit(True)
+            try:
+                c = QColorDialog.getColor(QColor(self.pen_color), self, "Elige un color")
+            finally:
+                self.dialog_active.emit(False)
             if c.isValid():
                 self.custom_sw.set_color(c)
                 cfg().setValue("custom_color", c.name())
                 self._set_color(c.name())
             else:
                 self._sync_swatches()
-            self.activateWindow()
-            self.setFocus()
+            force_foreground_window(self)
         else:
             self._set_color(sw.col.name())
 
     def _change_folder(self):
-        d = pick_folder(self)
-        self.activateWindow()
-        self.setFocus()
+        self.dialog_active.emit(True)
+        try:
+            d = pick_folder(self)
+        finally:
+            self.dialog_active.emit(False)
+        force_foreground_window(self)
         if d:
             self._refresh_folder_tips()
             self.message.emit(f"Las capturas se guardarán en: {d}")
@@ -1197,8 +1287,7 @@ class Overlay(QWidget):
     def _label_geom(self, s: QRect):
         label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
         if self.beautify:
-            tname = BEAUTIFY_THEMES[self.beautify_theme][0]
-            label += f"  ·  Fondo: {tname} (Shift+B)"
+            label += f"  ·  Fondo {self.pen_color.upper()} (B sig. · Shift+B quitar)"
         lw = _fm(12, False).horizontalAdvance(label) + 16
         ly = s.top() - 26 if s.top() > 30 else s.top() + 6
         lx = s.left() if s.top() > 30 else s.left() + 6
@@ -1221,7 +1310,7 @@ class Overlay(QWidget):
     def _sel_bounds(self) -> QRectF | None:
         if not self.sel:
             return None
-        r = QRectF(self.sel).adjusted(-7, -7, 8, 8)
+        r = QRectF(self.sel).adjusted(-14, -14, 15, 15)
         return r.united(self._label_geom(self.sel)[0].adjusted(-2, -2, 2, 2))
 
     def _mag_bounds(self) -> QRectF | None:
@@ -1259,10 +1348,19 @@ class Overlay(QWidget):
             if self.cur:
                 draw_annotation(p, self.cur, self.img, self.dpr)
 
-            border_col = BEAUTIFY_THEMES[self.beautify_theme][1] if self.beautify else ACCENT
-            p.setPen(QPen(QColor(border_col), 2.0 if self.beautify else 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(QRectF(s))
+            if self.beautify:
+                c1, c2 = _gradient_pair(self.pen_color)
+                grad = QLinearGradient(QPointF(s.topLeft()), QPointF(s.bottomRight()))
+                grad.setColorAt(0.0, c1)
+                grad.setColorAt(1.0, c2)
+                p.setPen(QPen(grad, 6.0, Qt.PenStyle.SolidLine,
+                              Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(QRectF(s).adjusted(-3, -3, 3, 3), 5, 5)
+            else:
+                p.setPen(QPen(QColor(self.pen_color), 1.8))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRect(QRectF(s))
             if not self.cur:
                 p.setBrush(QColor("white"))
                 for x, y in self._handle_points().values():
@@ -1594,10 +1692,9 @@ class Overlay(QWidget):
                 self._set_tool(TOOL_KEYS[t])
             elif t == "b":
                 if shift:
-                    self._cycle_beautify_theme()
+                    self._disable_beautify()
                 else:
-                    self.beautify_btn.toggle()
-                    self._toggle_beautify()
+                    self._step_beautify_loop()
             elif t == "f":
                 self.pin_capture()
             elif t == "o":
@@ -1610,16 +1707,33 @@ class Overlay(QWidget):
                 self.wslider.setValue(self.pen_w + 1)
 
     # ---------- acciones ----------
-    def _toggle_beautify(self):
-        self.beautify = self.beautify_btn.isChecked()
-        self.update()
-
-    def _cycle_beautify_theme(self):
-        self.beautify_theme = (self.beautify_theme + 1) % len(BEAUTIFY_THEMES)
-        cfg().setValue("beautify_theme", self.beautify_theme)
+    def _on_beautify_clicked(self):
         if not self.beautify:
             self.beautify = True
             self.beautify_btn.setChecked(True)
+            self.update()
+        else:
+            # Ya estaba activo: avanza al siguiente color de la paleta en loop
+            self.beautify_btn.setChecked(True)
+            self._advance_palette_color()
+
+    def _step_beautify_loop(self):
+        if not self.beautify:
+            self.beautify = True
+            self.beautify_btn.setChecked(True)
+            self.update()
+        else:
+            self._advance_palette_color()
+
+    def _advance_palette_color(self):
+        low = [c.lower() for c in PALETTE]
+        cur = self.pen_color.lower()
+        idx = (low.index(cur) + 1) % len(PALETTE) if cur in low else 0
+        self._set_color(PALETTE[idx])
+
+    def _disable_beautify(self):
+        self.beautify = False
+        self.beautify_btn.setChecked(False)
         self.update()
 
     def undo(self):
@@ -1659,16 +1773,16 @@ class Overlay(QWidget):
             p.end()
         use_b = self.beautify if beautify is None else beautify
         if use_b:
-            img = apply_beautifier(img, self.dpr, self.beautify_theme)
+            img = apply_beautifier(img, self.dpr, self.pen_color)
         return img
 
     def pin_capture(self):
-        """Deja la captura flotando siempre visible en pantalla (Pin to screen)."""
-        img = self.render_result()
+        """Deja la captura flotando siempre visible en pantalla (solo con el borde, sin fondo invasivo)."""
+        img = self.render_result(beautify=False)
         if img is None or not self.sel:
             return
         gpos = self.mapToGlobal(self.sel.topLeft())
-        self.pinned.emit(img, gpos, self.dpr)
+        self.pinned.emit(img, gpos, self.dpr, self.pen_color)
         self.cancel()
 
     def ocr_capture(self):
@@ -1741,11 +1855,14 @@ class Overlay(QWidget):
         if img is None:
             return
         default = get_save_dir() / f"captura_{datetime.now():%Y-%m-%d_%H-%M-%S}.png"
-        fn, flt = QFileDialog.getSaveFileName(
-            self, "Guardar captura como…", str(default),
-            "PNG (*.png);;JPEG (*.jpg *.jpeg);;BMP (*.bmp)")
-        self.activateWindow()
-        self.setFocus()
+        self.dialog_active.emit(True)
+        try:
+            fn, flt = QFileDialog.getSaveFileName(
+                self, "Guardar captura como…", str(default),
+                "PNG (*.png);;JPEG (*.jpg *.jpeg);;BMP (*.bmp)")
+        finally:
+            self.dialog_active.emit(False)
+        force_foreground_window(self)
         if not fn:
             return
         ext = Path(fn).suffix.lower()
@@ -1768,6 +1885,10 @@ class Overlay(QWidget):
         if self._closing:
             return
         self._closing = True
+        try:
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
         if self._width_dirty:
             cfg().setValue("width", self.pen_w)
         self.hide()
@@ -1777,27 +1898,41 @@ class Overlay(QWidget):
 
 # ============================================================ atajos globales
 class WinHotkeys(QAbstractNativeEventFilter):
-    """Atajos globales con RegisterHotKey de Windows.
+    """Atajos globales con RegisterHotKey de Windows + fallback WH_KEYBOARD_LL.
 
-    A diferencia de un hook de teclado (pynput), Windows solo avisa a la app
-    cuando se pulsa el atajo: costo cero en segundo plano, sin pasar cada tecla
-    del sistema por Python. Además Windows consume la tecla, así que Impr Pant
-    no dispara también la captura nativa."""
+    - En condiciones normales usa RegisterHotKey (costo 0% de CPU en reposo).
+    - Si otro programa (ej. Recortes de Windows 11 o OneDrive) bloquea Impr Pant,
+      activa automáticamente un hook ligero en C (WH_KEYBOARD_LL) que solo
+      intercepta VK_SNAPSHOT (0x2C) para que Impr Pant jamás falle.
+    - También detecta cuando el PC vuelve de suspensión (WM_POWERBROADCAST) o
+      cuando se reinicia explorer.exe (TaskbarCreated) para re-registrar todo."""
     WM_HOTKEY = 0x0312
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+    WM_POWERBROADCAST = 0x0218
+    WM_DISPLAYCHANGE = 0x007E
+    MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
 
-    def __init__(self, callback):
+    def __init__(self, callback, on_resume=None):
         super().__init__()
         import ctypes
         from ctypes import wintypes
+        self._ctypes = ctypes
+        self._wintypes = wintypes
         self._user32 = ctypes.windll.user32
+        self._kernel32 = ctypes.windll.kernel32
         self._user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int,
                                                 wintypes.UINT, wintypes.UINT]
         self._user32.RegisterHotKey.restype = wintypes.BOOL
         self._user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+        self._user32.UnregisterHotKey.restype = wintypes.BOOL
+        self._user32.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+        self._user32.RegisterWindowMessageW.restype = wintypes.UINT
+        self._taskbar_msg = self._user32.RegisterWindowMessageW("TaskbarCreated")
         self._MSG = wintypes.MSG
         self._default_cb = callback
+        self._on_resume = on_resume
         self._callbacks: dict[int, object] = {}
+        self._ll_hook = None
+        self._ll_proc = None
 
     def register(self, hid: int, mods: int, vk: int, callback=None) -> bool:
         if hid in self._callbacks:
@@ -1812,10 +1947,52 @@ class WinHotkeys(QAbstractNativeEventFilter):
             self._user32.UnregisterHotKey(None, hid)
             self._callbacks.pop(hid, None)
 
+    def install_prtsc_hook_fallback(self):
+        """Fallback automático: si Windows 11 Snipping Tool o OneDrive tienen
+        tomado RegisterHotKey(VK_SNAPSHOT), interceptamos 0x2C por WH_KEYBOARD_LL."""
+        if self._ll_hook is not None:
+            return True
+        ctypes = self._ctypes
+        wintypes = self._wintypes
+        u32 = self._user32
+
+        class KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD),
+                        ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_size_t)]
+
+        LRESULT = ctypes.c_ssize_t
+        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        u32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+        u32.SetWindowsHookExW.restype = wintypes.HANDLE
+        u32.CallNextHookEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+        u32.CallNextHookEx.restype = LRESULT
+        u32.UnhookWindowsHookEx.argtypes = [wintypes.HANDLE]
+        u32.UnhookWindowsHookEx.restype = wintypes.BOOL
+
+        def _proc(nCode, wParam, lParam):
+            if nCode == 0 and lParam:
+                kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if kb.vkCode == 0x2C:  # VK_SNAPSHOT (Impr Pant)
+                    if wParam in (0x0100, 0x0104):  # WM_KEYDOWN, WM_SYSKEYDOWN
+                        QTimer.singleShot(0, self._default_cb)
+                    return 1  # Suprime el recorte nativo de Windows
+            return u32.CallNextHookEx(self._ll_hook, nCode, wParam, lParam)
+
+        self._ll_proc = HOOKPROC(_proc)
+        self._ll_hook = u32.SetWindowsHookExW(13, self._ll_proc, None, 0)  # 13 = WH_KEYBOARD_LL
+        return bool(self._ll_hook)
+
     def unregister_all(self):
         for hid in list(self._callbacks):
             self._user32.UnregisterHotKey(None, hid)
         self._callbacks.clear()
+        if self._ll_hook is not None:
+            self._user32.UnhookWindowsHookEx(self._ll_hook)
+            self._ll_hook = None
+            self._ll_proc = None
 
     def nativeEventFilter(self, event_type, message):
         # En PySide6, message es shiboken6.VoidPtr con Size=0 (bool(message) es False),
@@ -1823,17 +2000,21 @@ class WinHotkeys(QAbstractNativeEventFilter):
         addr = int(message) if message is not None else 0
         if addr and bytes(event_type) in (b"windows_dispatcher_MSG", b"windows_generic_MSG"):
             msg = self._MSG.from_address(addr)
-            if msg.message == self.WM_HOTKEY and msg.wParam in self._callbacks:
+            m = msg.message
+            if m == self.WM_HOTKEY and msg.wParam in self._callbacks:
                 cb = self._callbacks[msg.wParam]
-                # Diferido: no abrir ventanas dentro del filtro de mensajes nativo
                 QTimer.singleShot(0, cb)
                 return True, 0
+            elif m in (self.WM_POWERBROADCAST, self.WM_DISPLAYCHANGE) or (
+                    self._taskbar_msg and m == self._taskbar_msg):
+                if self._on_resume:
+                    QTimer.singleShot(800, self._on_resume)
         return False, 0
 
 
 def force_foreground_window(widget: QWidget):
     """Fuerza a Windows a entregar el foco de teclado al overlay aunque la app
-    estuviera en segundo plano en la bandeja del sistema."""
+    estuviera en segundo plano o sobre una ventana con privilegios elevados."""
     widget.raise_()
     widget.activateWindow()
     widget.setFocus()
@@ -1841,8 +2022,18 @@ def force_foreground_window(widget: QWidget):
         return
     try:
         import ctypes
+        from ctypes import wintypes
         u32 = ctypes.windll.user32
         k32 = ctypes.windll.kernel32
+        u32.GetForegroundWindow.restype = wintypes.HWND
+        u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        u32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+        u32.AttachThreadInput.restype = wintypes.BOOL
+        u32.BringWindowToTop.argtypes = [wintypes.HWND]
+        u32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        u32.SetFocus.argtypes = [wintypes.HWND]
+
         hwnd = int(widget.winId())
         fg = u32.GetForegroundWindow()
         cur_tid = k32.GetCurrentThreadId()
@@ -1850,6 +2041,8 @@ def force_foreground_window(widget: QWidget):
         attached = False
         if fg_tid and fg_tid != cur_tid:
             attached = bool(u32.AttachThreadInput(fg_tid, cur_tid, True))
+        # Desbloquea ForegroundLockTimeout incluso si UIPI impidió AttachThreadInput
+        u32.keybd_event(0, 0, 2, 0)
         u32.BringWindowToTop(hwnd)
         u32.SetForegroundWindow(hwnd)
         u32.SetFocus(hwnd)
@@ -1907,6 +2100,9 @@ class App(QObject):
         QTimer.singleShot(400, self._prewarm_caches)
         QTimer.singleShot(2500, self._ensure_tray_and_hotkeys)
         QTimer.singleShot(6000, self._ensure_tray_and_hotkeys)
+        self._health_timer = QTimer(self)
+        self._health_timer.timeout.connect(self._ensure_tray_and_hotkeys)
+        self._health_timer.start(30000)
 
         s = cfg()
         if not s.value("welcomed", False, type=bool):
@@ -1931,12 +2127,16 @@ class App(QObject):
 
     def _ensure_tray_and_hotkeys(self):
         """Reintenta mostrar el icono de bandeja y registrar atajos si Windows aún
-        estaba terminando de cargar el escritorio durante el arranque."""
+        estaba terminando de cargar el escritorio o al volver de suspensión."""
         if not self.tray.isVisible():
             self.tray.show()
         if self._hk is not None:
-            self._hk.register(1, 0, 0x2C)
+            ok_prt = self._hk.register(1, 0, 0x2C)
+            self._hk.register(11, WinHotkeys.MOD_CONTROL, 0x2C)
+            self._hk.register(12, WinHotkeys.MOD_SHIFT, 0x2C)
             self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT, ord("S"))
+            if not ok_prt:
+                self._hk.install_prtsc_hook_fallback()
 
     def _refresh_menu(self):
         d = get_save_dir()
@@ -1949,14 +2149,17 @@ class App(QObject):
     def _start_hotkeys(self):
         emit = self.hotkey.emit
         if sys.platform == "win32":
-            self._hk = WinHotkeys(emit)
+            self._hk = WinHotkeys(emit, on_resume=self._ensure_tray_and_hotkeys)
             QApplication.instance().installNativeEventFilter(self._hk)
             QApplication.instance().aboutToQuit.connect(self._hk.unregister_all)
             ok_prt = self._hk.register(1, 0, 0x2C)                     # Impr Pant
+            self._hk.register(11, WinHotkeys.MOD_CONTROL, 0x2C)        # Ctrl+Impr Pant
+            self._hk.register(12, WinHotkeys.MOD_SHIFT, 0x2C)          # Shift+Impr Pant
             ok_alt = self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT,
-                                       ord("S"))                         # Ctrl+Alt+S
+                                       ord("S"))                       # Ctrl+Alt+S
+            if not ok_prt:
+                self._hk.install_prtsc_hook_fallback()
             if not ok_prt or not ok_alt:
-                # Reintentar tras 3 segundos (útil al encender el PC cuando el shell aún carga)
                 QTimer.singleShot(3000, self._check_hotkeys_after_boot)
             return
 
@@ -1977,15 +2180,31 @@ class App(QObject):
         if self._hk is None:
             return
         ok_prt = self._hk.register(1, 0, 0x2C)
+        self._hk.register(11, WinHotkeys.MOD_CONTROL, 0x2C)
+        self._hk.register(12, WinHotkeys.MOD_SHIFT, 0x2C)
         ok_alt = self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT, ord("S"))
+        if not ok_prt:
+            ok_prt = self._hk.install_prtsc_hook_fallback()
         if not ok_prt and not ok_alt:
             self.tray.showMessage(
                 "ClearShot", "No se pudieron registrar los atajos globales "
                 "(otro programa los está usando). Captura desde el icono de la bandeja.")
-        elif not ok_prt:
-            self.tray.showMessage(
-                "ClearShot", "Impr Pant está en uso por otro programa o por Recortes "
-                "de Windows. Usa Ctrl+Alt+S (ver README → Solución de problemas).")
+
+    def _register_esc_hotkeys(self):
+        if self._hk is not None:
+            self._hk.register(3, 0, 0x1B, self._on_escape_hotkey)
+            self._hk.register(4, WinHotkeys.MOD_SHIFT, 0x1B, self._on_escape_hotkey)
+
+    def _unregister_esc_hotkeys(self):
+        if self._hk is not None:
+            self._hk.unregister(3)
+            self._hk.unregister(4)
+
+    def _on_dialog_active(self, active: bool):
+        if active:
+            self._unregister_esc_hotkeys()
+        elif self.overlay is not None:
+            self._register_esc_hotkeys()
 
     def _on_escape_hotkey(self):
         """Garantiza que la tecla Esc cierre la captura el 100% de las veces,
@@ -1998,8 +2217,8 @@ class App(QObject):
                 force_foreground_window(self.overlay)
             else:
                 self.overlay.cancel()
-        elif self._hk is not None:
-            self._hk.unregister(3)
+        else:
+            self._unregister_esc_hotkeys()
 
     def capture(self):
         if self.overlay is not None:
@@ -2013,28 +2232,26 @@ class App(QObject):
         self.overlay.saved.connect(self._on_saved)
         self.overlay.pinned.connect(self._on_pinned)
         self.overlay.ocr_requested.connect(self._start_ocr)
-        if self._hk is not None:
-            self._hk.register(3, 0, 0x1B, self._on_escape_hotkey)   # VK_ESCAPE mientras captura
+        self.overlay.dialog_active.connect(self._on_dialog_active)
+        self._register_esc_hotkeys()
         self.overlay.show()
         force_foreground_window(self.overlay)
         QTimer.singleShot(30, lambda: force_foreground_window(self.overlay) if self.overlay else None)
 
     def _overlay_closed(self):
-        if self._hk is not None:
-            self._hk.unregister(3)
+        self._unregister_esc_hotkeys()
         self.overlay = None
         self._refresh_menu()
 
-    def _on_pinned(self, img: QImage, gpos: QPoint, dpr: float):
-        pin = PinnedWindow(img, gpos, dpr)
+    def _on_pinned(self, img: QImage, gpos: QPoint, dpr: float, border_color: str = ACCENT):
+        pin = PinnedWindow(img, gpos, dpr, border_color)
         pin.closed.connect(lambda w: self.pins.remove(w) if w in self.pins else None)
         pin.saved.connect(self._on_saved)
         pin.message.connect(lambda m: self.tray.showMessage("ClearShot", m))
         pin.ocr_requested.connect(self._start_ocr)
         self.pins.append(pin)
         pin.show()
-        pin.raise_()
-        pin.activateWindow()
+        force_foreground_window(pin)
 
     def _start_ocr(self, img: QImage):
         def worker():
@@ -2108,7 +2325,16 @@ def main():
     is_startup = "--startup" in sys.argv
     if sys.platform == "win32":
         import ctypes
+        from ctypes import wintypes
         k32 = ctypes.windll.kernel32
+        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.CreateEventW.restype = wintypes.HANDLE
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        k32.SetEvent.argtypes = [wintypes.HANDLE]
+        k32.SetEvent.restype = wintypes.BOOL
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
         try:
             old_lock = Path(QDir.temp().filePath("clearshot.lock"))
             if old_lock.exists():
