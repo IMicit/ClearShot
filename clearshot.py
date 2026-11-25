@@ -78,7 +78,7 @@ HANDLE_CURSORS = {
 }
 
 BAR_QSS = f"""
-#bar {{ background:#1b1d24; border:1px solid #343845; border-radius:12px; }}
+#bar, #topbar {{ background:#1b1d24; border:1px solid #343845; border-radius:12px; }}
 QToolButton {{ color:#e8e8ee; background:transparent; border:none;
                border-radius:8px; padding:4px; }}
 QToolButton:hover {{ background:#2c303b; }}
@@ -88,9 +88,10 @@ QToolButton#copy {{ background:{ACCENT}; color:white; padding:4px 12px; font-wei
 QToolButton#copy:hover {{ background:#9170ff; }}
 QToolButton#save {{ background:#16a34a; color:white; padding:4px 12px; font-weight:600; }}
 QToolButton#save:hover {{ background:#22c55e; }}
-QToolButton#close {{ background:#3b1f26; color:#fecaca; border:1px solid #7f1d1d; padding:4px 10px; font-weight:600; }}
-QToolButton#close:hover {{ background:#dc2626; color:white; border:1px solid #ef4444; }}
+QToolButton#close {{ background:#dc2626; color:white; border:1px solid #ef4444; padding:4px 12px; font-weight:600; }}
+QToolButton#close:hover {{ background:#ef4444; color:white; border:1px solid #f87171; }}
 QLabel {{ color:#9aa0b0; font-size:11px; background:transparent; }}
+QLabel#tophint {{ color:#e8e8ee; font-size:13px; font-weight:500; padding:0px 6px; }}
 QFrame#sep {{ background:#343845; border:none; }}
 QSlider::groove:horizontal {{ height:4px; background:#343845; border-radius:2px; }}
 QSlider::sub-page:horizontal {{ background:{ACCENT}; border-radius:2px; }}
@@ -929,7 +930,7 @@ class Overlay(QWidget):
         self.close_btn = QToolButton()
         self.close_btn.setObjectName("close")
         self.close_btn.setText("Salir (Esc)")
-        self.close_btn.setIcon(tool_icon("close", "#fecaca"))
+        self.close_btn.setIcon(tool_icon("close", "#ffffff"))
         self.close_btn.setIconSize(QSize(18, 18))
         self.close_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.close_btn.setFixedHeight(34)
@@ -939,6 +940,33 @@ class Overlay(QWidget):
         self.close_btn.clicked.connect(self.cancel)
         row1.addWidget(self.close_btn)
         root.addLayout(row1)
+
+        # ---- barra superior permanente con botón real "✕ Salir (Esc)"
+        self.top_bar = Panel(self)
+        self.top_bar.setObjectName("topbar")
+        self.top_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.top_bar.setStyleSheet(BAR_QSS)
+        self.top_bar.setCursor(Qt.CursorShape.ArrowCursor)
+        tb_lay = QHBoxLayout(self.top_bar)
+        tb_lay.setContentsMargins(14, 6, 8, 6)
+        tb_lay.setSpacing(10)
+        lbl_hint = QLabel("Arrastra para seleccionar el área   ·   Clic derecho o Esc para salir")
+        lbl_hint.setObjectName("tophint")
+        tb_lay.addWidget(lbl_hint)
+        self.top_exit_btn = QToolButton()
+        self.top_exit_btn.setObjectName("close")
+        self.top_exit_btn.setText("Salir (Esc)")
+        self.top_exit_btn.setIcon(tool_icon("close", "#ffffff"))
+        self.top_exit_btn.setIconSize(QSize(16, 16))
+        self.top_exit_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.top_exit_btn.setFixedHeight(30)
+        self.top_exit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.top_exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.top_exit_btn.setToolTip("Cerrar captura  (Esc)")
+        self.top_exit_btn.clicked.connect(self.cancel)
+        tb_lay.addWidget(self.top_exit_btn)
+        self.top_bar.adjustSize()
+        self._place_top_bar()
 
         # ---- fila 2: colores y grosor (se oculta con la herramienta Área)
         self.row2 = QWidget()
@@ -1089,6 +1117,16 @@ class Overlay(QWidget):
             self._refresh_folder_tips()
             self.message.emit(f"Las capturas se guardarán en: {d}")
 
+    def _place_top_bar(self):
+        self.top_bar.adjustSize()
+        tw, th = self.top_bar.width(), self.top_bar.height()
+        self.top_bar.move((self.width() - tw) // 2, 22)
+        if self.sel and self.sel.intersects(self.top_bar.geometry().adjusted(-8, -8, 8, 8)):
+            self.top_bar.hide()
+        else:
+            self.top_bar.show()
+            self.top_bar.raise_()
+
     def _place_bar(self):
         if not self.sel:
             return
@@ -1237,47 +1275,9 @@ class Overlay(QWidget):
             p.drawRoundedRect(lrect, 6, 6)
             p.setPen(QColor("white"))
             p.drawText(lrect, Qt.AlignmentFlag.AlignCenter, label)
-        else:
-            self._draw_hint(p)
 
         if self._mag_visible():
             self._draw_magnifier(p)
-
-    def _hint_rects(self):
-        text = "Arrastra para seleccionar el área   ·   Clic derecho para cancelar"
-        btn_text = "✕  Salir (Esc)"
-        tw = _fm(14, False).horizontalAdvance(text)
-        bw = _fm(13, True).horizontalAdvance(btn_text) + 24
-        total_w = tw + 28 + bw + 18
-        x0 = (self.width() - total_w) / 2
-        pill = QRectF(x0, 26, total_w, 40)
-        btn = QRectF(pill.right() - bw - 6, 31, bw, 30)
-        return pill, btn, text, btn_text
-
-    def _draw_hint(self, p: QPainter):
-        pill, btn, text, btn_text = self._hint_rects()
-        p.setPen(QPen(QColor(255, 255, 255, 35), 1))
-        p.setBrush(QColor(20, 22, 28, 232))
-        p.drawRoundedRect(pill, 20, 20)
-
-        p.setFont(_font(14, bold=False))
-        p.setPen(QColor("#e8e8ee"))
-        text_r = QRectF(pill.left() + 18, pill.top(), pill.width() - btn.width() - 30, pill.height())
-        p.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
-
-        if self._exit_hover:
-            p.setPen(QPen(QColor("#f87171"), 1.2))
-            p.setBrush(QColor("#dc2626"))
-            p.setFont(_font(13, bold=True))
-            p.drawRoundedRect(btn, 15, 15)
-            p.setPen(QColor("white"))
-        else:
-            p.setPen(QPen(QColor("#7f1d1d"), 1.0))
-            p.setBrush(QColor("#3b1f26"))
-            p.setFont(_font(13, bold=True))
-            p.drawRoundedRect(btn, 15, 15)
-            p.setPen(QColor("#fecaca"))
-        p.drawText(btn, Qt.AlignmentFlag.AlignCenter, btn_text)
 
     def _draw_magnifier(self, p: QPainter):
         pos = self.mouse
@@ -1387,16 +1387,13 @@ class Overlay(QWidget):
                 self.annots.clear()
                 self.redo_stack.clear()
                 self.bar.hide()
+                self._place_top_bar()
                 self._annots_changed()
                 self.update()
             else:
                 self.cancel()
             return
         if e.button() != Qt.MouseButton.LeftButton:
-            return
-
-        if not self.sel and self._hint_rects()[1].contains(pos):
-            self.cancel()
             return
 
         if self.sel:
@@ -1511,20 +1508,13 @@ class Overlay(QWidget):
                 l, t = max(l, 0), max(t, 0)
                 r, b = min(r, self.width()), min(b, self.height())
                 self.sel = QRect(l, t, max(r - l, 1), max(b - t, 1))
+            self._place_top_bar()
         else:
-            if not self.sel:
-                pill, btn, _, _ = self._hint_rects()
-                hov = btn.contains(pos)
-                if hov != self._exit_hover:
-                    self._exit_hover = hov
-                    dirty.append(pill.adjusted(-2, -2, 2, 2))
-                self.setCursor(Qt.CursorShape.PointingHandCursor if hov
-                               else Qt.CursorShape.CrossCursor)
-            else:
-                self._update_cursor(ip)
+            self._update_cursor(ip)
 
         if bool(self.sel) != had_sel:
-            self.update()                      # aparece/desaparece la pista superior
+            self._place_top_bar()
+            self.update()                      # aparece/desaparece la selección
             return
         dirty.append(self._mag_bounds())
         if self.drag:
@@ -1770,6 +1760,10 @@ class Overlay(QWidget):
         else:
             self.message.emit("No se pudo guardar la captura")
 
+    def closeEvent(self, e):
+        self.cancel()
+        e.accept()
+
     def cancel(self):
         if self._closing:
             return
@@ -1824,8 +1818,11 @@ class WinHotkeys(QAbstractNativeEventFilter):
         self._callbacks.clear()
 
     def nativeEventFilter(self, event_type, message):
-        if message and bytes(event_type) in (b"windows_dispatcher_MSG", b"windows_generic_MSG"):
-            msg = self._MSG.from_address(int(message))
+        # En PySide6, message es shiboken6.VoidPtr con Size=0 (bool(message) es False),
+        # por lo que debemos verificar int(message) != 0 en vez de bool(message).
+        addr = int(message) if message is not None else 0
+        if addr and bytes(event_type) in (b"windows_dispatcher_MSG", b"windows_generic_MSG"):
+            msg = self._MSG.from_address(addr)
             if msg.message == self.WM_HOTKEY and msg.wParam in self._callbacks:
                 cb = self._callbacks[msg.wParam]
                 # Diferido: no abrir ventanas dentro del filtro de mensajes nativo
@@ -2103,21 +2100,27 @@ def main():
         draw_icon(256).save(out)
         return
     # Evita abrir dos copias a la vez: en Windows usamos un Mutex del kernel en RAM
-    # (se libera solo al apagar o reiniciar el PC, sin dejar archivos .lock huérfanos en disco).
+    # y un Event para que al abrir ClearShot desde el menú Inicio / Aplicaciones
+    # se dispare inmediatamente una captura de pantalla.
     _win_mutex = None
+    _cap_event = None
     lock = None
+    is_startup = "--startup" in sys.argv
     if sys.platform == "win32":
         import ctypes
-        # Limpiar cualquier archivo .lock antiguo de versiones anteriores
+        k32 = ctypes.windll.kernel32
         try:
             old_lock = Path(QDir.temp().filePath("clearshot.lock"))
             if old_lock.exists():
                 old_lock.unlink()
         except OSError:
             pass
-        _win_mutex = ctypes.windll.kernel32.CreateMutexW(
+        _cap_event = k32.CreateEventW(None, False, False, "Local\\ClearShot_Capture_Event")
+        _win_mutex = k32.CreateMutexW(
             None, False, "Local\\ClearShot_SingleInstance_Mutex")
-        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        if k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS: ya está corriendo en la bandeja
+            if not is_startup and _cap_event:
+                k32.SetEvent(_cap_event)       # avisar a la instancia activa que abra captura
             sys.exit(0)
     else:
         lock = QLockFile(QDir.temp().filePath("clearshot.lock"))
@@ -2128,6 +2131,15 @@ def main():
     app.setWindowIcon(make_icon())
     app.aboutToQuit.connect(lambda: cfg().sync())
     clearshot = App()  # noqa: F841 (mantener referencia)
+    if sys.platform == "win32" and _cap_event:
+        def _watch_capture_event():
+            while ctypes.windll.kernel32.WaitForSingleObject(_cap_event, 0xFFFFFFFF) == 0:
+                clearshot.hotkey.emit()
+        threading.Thread(target=_watch_capture_event, daemon=True).start()
+    if not is_startup:
+        # Si el usuario abrió ClearShot manualmente desde Aplicaciones / Menú Inicio,
+        # abrir captura de inmediato además de dejarlo en la bandeja.
+        QTimer.singleShot(150, clearshot.capture)
     sys.exit(app.exec())
 
 
