@@ -130,8 +130,7 @@ Es intencional: ClearShot permite una sola instancia a la vez para no duplicar e
 
 ## Limitaciones
 
-- Con varios monitores, captura solo el monitor donde está el cursor.
-- Las anotaciones no se mueven con el área si la desplazas después de dibujar.
+- Con varios monitores, captura el monitor donde está el cursor al presionar el atajo.
 - El texto es de una sola línea.
 
 ## Desarrollo

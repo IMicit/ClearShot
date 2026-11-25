@@ -88,6 +88,8 @@ QToolButton#copy {{ background:{ACCENT}; color:white; padding:4px 12px; font-wei
 QToolButton#copy:hover {{ background:#9170ff; }}
 QToolButton#save {{ background:#16a34a; color:white; padding:4px 12px; font-weight:600; }}
 QToolButton#save:hover {{ background:#22c55e; }}
+QToolButton#close {{ background:#3b1f26; color:#fecaca; border:1px solid #7f1d1d; padding:4px 10px; font-weight:600; }}
+QToolButton#close:hover {{ background:#dc2626; color:white; border:1px solid #ef4444; }}
 QLabel {{ color:#9aa0b0; font-size:11px; background:transparent; }}
 QFrame#sep {{ background:#343845; border:none; }}
 QSlider::groove:horizontal {{ height:4px; background:#343845; border-radius:2px; }}
@@ -503,11 +505,14 @@ class Dot(QWidget):
 
 
 class TextEdit(QLineEdit):
+    escaped = pyqtSignal(bool)  # True si estaba vacío (cerrar captura), False si solo canceló texto
+
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key.Key_Escape:   # cancela el texto sin cerrar la captura
+        if e.key() == Qt.Key.Key_Escape:
+            was_empty = not self.text().strip()
             self.clear()
-            self.clearFocus()
             e.accept()
+            self.escaped.emit(was_empty)
             return
         super().keyPressEvent(e)
 
@@ -828,6 +833,7 @@ class Overlay(QWidget):
         self.text_size = 16
         self.text_color = "#ffffff"
         self._closing = False
+        self._exit_hover = False
         self.mouse = QPointF(QCursor.pos() - screen.geometry().topLeft())
         # El overlay pinta todos sus píxeles: Qt no necesita borrar el fondo antes
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -919,9 +925,19 @@ class Overlay(QWidget):
             row1.addWidget(b)
             setattr(self, name + "_btn", b)
         self.copy_btn.setToolTip("Copiar al portapapeles  (Enter / Ctrl+C)\nGuardar y copiar  (Ctrl+Shift+C)")
-        close = self._tbtn("close", "Cancelar  (Esc)")
-        close.clicked.connect(self.cancel)
-        row1.addWidget(close)
+        row1.addSpacing(2)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("close")
+        self.close_btn.setText("Salir (Esc)")
+        self.close_btn.setIcon(tool_icon("close", "#fecaca"))
+        self.close_btn.setIconSize(QSize(18, 18))
+        self.close_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.close_btn.setFixedHeight(34)
+        self.close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setToolTip("Salir de la captura  (Esc / Clic derecho)")
+        self.close_btn.clicked.connect(self.cancel)
+        row1.addWidget(self.close_btn)
         root.addLayout(row1)
 
         # ---- fila 2: colores y grosor (se oculta con la herramienta Área)
@@ -1227,17 +1243,41 @@ class Overlay(QWidget):
         if self._mag_visible():
             self._draw_magnifier(p)
 
+    def _hint_rects(self):
+        text = "Arrastra para seleccionar el área   ·   Clic derecho para cancelar"
+        btn_text = "✕  Salir (Esc)"
+        tw = _fm(14, False).horizontalAdvance(text)
+        bw = _fm(13, True).horizontalAdvance(btn_text) + 24
+        total_w = tw + 28 + bw + 18
+        x0 = (self.width() - total_w) / 2
+        pill = QRectF(x0, 26, total_w, 40)
+        btn = QRectF(pill.right() - bw - 6, 31, bw, 30)
+        return pill, btn, text, btn_text
+
     def _draw_hint(self, p: QPainter):
-        f = _font(14, bold=False)
-        p.setFont(f)
-        text = "Arrastra para seleccionar el área   ·   Esc para salir"
-        w = _fm(14, False).horizontalAdvance(text) + 32
-        r = QRectF((self.width() - w) / 2, 28, w, 36)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(20, 22, 28, 225))
-        p.drawRoundedRect(r, 18, 18)
-        p.setPen(QColor("white"))
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+        pill, btn, text, btn_text = self._hint_rects()
+        p.setPen(QPen(QColor(255, 255, 255, 35), 1))
+        p.setBrush(QColor(20, 22, 28, 232))
+        p.drawRoundedRect(pill, 20, 20)
+
+        p.setFont(_font(14, bold=False))
+        p.setPen(QColor("#e8e8ee"))
+        text_r = QRectF(pill.left() + 18, pill.top(), pill.width() - btn.width() - 30, pill.height())
+        p.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+
+        if self._exit_hover:
+            p.setPen(QPen(QColor("#f87171"), 1.2))
+            p.setBrush(QColor("#dc2626"))
+            p.setFont(_font(13, bold=True))
+            p.drawRoundedRect(btn, 15, 15)
+            p.setPen(QColor("white"))
+        else:
+            p.setPen(QPen(QColor("#7f1d1d"), 1.0))
+            p.setBrush(QColor("#3b1f26"))
+            p.setFont(_font(13, bold=True))
+            p.drawRoundedRect(btn, 15, 15)
+            p.setPen(QColor("#fecaca"))
+        p.drawText(btn, Qt.AlignmentFlag.AlignCenter, btn_text)
 
     def _draw_magnifier(self, p: QPainter):
         pos = self.mouse
@@ -1306,9 +1346,18 @@ class Overlay(QWidget):
         fit()
         e.move(pos.toPoint())
         e.editingFinished.connect(self._commit_text)
+        e.escaped.connect(self._on_text_escaped)
         self.text_edit = e
         e.show()
         e.setFocus()
+
+    def _on_text_escaped(self, was_empty: bool):
+        self._commit_text()
+        if was_empty:
+            self.cancel()
+        else:
+            self.activateWindow()
+            self.setFocus()
 
     def _commit_text(self):
         e = self.text_edit
@@ -1344,6 +1393,10 @@ class Overlay(QWidget):
                 self.cancel()
             return
         if e.button() != Qt.MouseButton.LeftButton:
+            return
+
+        if not self.sel and self._hint_rects()[1].contains(pos):
+            self.cancel()
             return
 
         if self.sel:
@@ -1434,7 +1487,11 @@ class Overlay(QWidget):
                 dx, dy = ip.x() - d["origin"].x(), ip.y() - d["origin"].y()
                 nx = min(max(o.left() + dx, 0), self.width() - o.width())
                 ny = min(max(o.top() + dy, 0), self.height() - o.height())
+                step_dx = nx - self.sel.left()
+                step_dy = ny - self.sel.top()
                 self.sel = QRect(nx, ny, o.width(), o.height())
+                if (step_dx or step_dy) and self.annots:
+                    self._shift_annots(step_dx, step_dy)
             elif d["mode"] == "resize":
                 o, h = d["rect"], d["handle"]
                 dx, dy = ip.x() - d["origin"].x(), ip.y() - d["origin"].y()
@@ -1455,7 +1512,16 @@ class Overlay(QWidget):
                 r, b = min(r, self.width()), min(b, self.height())
                 self.sel = QRect(l, t, max(r - l, 1), max(b - t, 1))
         else:
-            self._update_cursor(ip)
+            if not self.sel:
+                pill, btn, _, _ = self._hint_rects()
+                hov = btn.contains(pos)
+                if hov != self._exit_hover:
+                    self._exit_hover = hov
+                    dirty.append(pill.adjusted(-2, -2, 2, 2))
+                self.setCursor(Qt.CursorShape.PointingHandCursor if hov
+                               else Qt.CursorShape.CrossCursor)
+            else:
+                self._update_cursor(ip)
 
         if bool(self.sel) != had_sel:
             self.update()                      # aparece/desaparece la pista superior
@@ -1469,6 +1535,21 @@ class Overlay(QWidget):
             for r in dirty[1:]:
                 u = u.united(r)
             self.update(u.toAlignedRect())
+
+    def _shift_annots(self, dx: float, dy: float):
+        """Desplaza todas las anotaciones junto con el área seleccionada."""
+        delta = QPointF(dx, dy)
+        for a in self.annots:
+            if "points" in a:
+                a["points"] = [pt + delta for pt in a["points"]]
+                a.pop("_poly", None)
+            elif "p1" in a and "p2" in a:
+                a["p1"] = a["p1"] + delta
+                a["p2"] = a["p2"] + delta
+                a.pop("_mosaic", None)
+            elif "pos" in a:
+                a["pos"] = a["pos"] + delta
+        self._layer = None
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
@@ -1721,28 +1802,66 @@ class WinHotkeys(QAbstractNativeEventFilter):
         self._user32.RegisterHotKey.restype = wintypes.BOOL
         self._user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
         self._MSG = wintypes.MSG
-        self._callback = callback
-        self._ids: set[int] = set()
+        self._default_cb = callback
+        self._callbacks: dict[int, object] = {}
 
-    def register(self, hid: int, mods: int, vk: int) -> bool:
+    def register(self, hid: int, mods: int, vk: int, callback=None) -> bool:
+        if hid in self._callbacks:
+            return True
         if self._user32.RegisterHotKey(None, hid, mods | self.MOD_NOREPEAT, vk):
-            self._ids.add(hid)
+            self._callbacks[hid] = callback or self._default_cb
             return True
         return False
 
-    def unregister_all(self):
-        for hid in self._ids:
+    def unregister(self, hid: int):
+        if hid in self._callbacks:
             self._user32.UnregisterHotKey(None, hid)
-        self._ids.clear()
+            self._callbacks.pop(hid, None)
+
+    def unregister_all(self):
+        for hid in list(self._callbacks):
+            self._user32.UnregisterHotKey(None, hid)
+        self._callbacks.clear()
 
     def nativeEventFilter(self, event_type, message):
         if message and bytes(event_type) in (b"windows_dispatcher_MSG", b"windows_generic_MSG"):
             msg = self._MSG.from_address(int(message))
-            if msg.message == self.WM_HOTKEY and msg.wParam in self._ids:
+            if msg.message == self.WM_HOTKEY and msg.wParam in self._callbacks:
+                cb = self._callbacks[msg.wParam]
                 # Diferido: no abrir ventanas dentro del filtro de mensajes nativo
-                QTimer.singleShot(0, self._callback)
+                QTimer.singleShot(0, cb)
                 return True, 0
         return False, 0
+
+
+def force_foreground_window(widget: QWidget):
+    """Fuerza a Windows a entregar el foco de teclado al overlay aunque la app
+    estuviera en segundo plano en la bandeja del sistema."""
+    widget.raise_()
+    widget.activateWindow()
+    widget.setFocus()
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        hwnd = int(widget.winId())
+        fg = u32.GetForegroundWindow()
+        cur_tid = k32.GetCurrentThreadId()
+        fg_tid = u32.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = False
+        if fg_tid and fg_tid != cur_tid:
+            attached = bool(u32.AttachThreadInput(fg_tid, cur_tid, True))
+        u32.BringWindowToTop(hwnd)
+        u32.SetForegroundWindow(hwnd)
+        u32.SetFocus(hwnd)
+        if attached:
+            u32.AttachThreadInput(fg_tid, cur_tid, False)
+    except Exception:
+        pass
+    widget.activateWindow()
+    widget.setFocus()
 
 
 # ============================================================ aplicación
@@ -1784,7 +1903,13 @@ class App(QObject):
         self.tray.show()
         self.hotkey.connect(self.capture)
         self.tray.messageClicked.connect(self._open_last_saved)
+        self._hk: WinHotkeys | None = None
         self._start_hotkeys()
+        # Al arrancar Windows, explorer.exe puede tardar unos segundos en mostrar la bandeja;
+        # re-verificamos y pre-calentamos iconos/fuentes para que la 1ª captura sea instantánea.
+        QTimer.singleShot(400, self._prewarm_caches)
+        QTimer.singleShot(2500, self._ensure_tray_and_hotkeys)
+        QTimer.singleShot(6000, self._ensure_tray_and_hotkeys)
 
         s = cfg()
         if not s.value("welcomed", False, type=bool):
@@ -1792,6 +1917,29 @@ class App(QObject):
             self.tray.showMessage(
                 "ClearShot listo",
                 f"Pulsa Impr Pant para capturar.\nSe guarda en: {get_save_dir()}")
+
+    def _prewarm_caches(self):
+        """Pre-renderiza iconos vectoriales y fuentes en segundo plano tras iniciar."""
+        for key, _, _ in TOOLS:
+            tool_icon(key)
+        for key in ("undo", "redo", "beautify", "pin", "ocr", "folder",
+                    "copy", "save", "close", "minus", "plus"):
+            tool_icon(key)
+        tool_icon("copy", "#ffffff")
+        tool_icon("save", "#ffffff")
+        tool_icon("close", "#fecaca")
+        for sz in (11, 12, 13, 14, 16):
+            _fm(sz, False)
+            _fm(sz, True)
+
+    def _ensure_tray_and_hotkeys(self):
+        """Reintenta mostrar el icono de bandeja y registrar atajos si Windows aún
+        estaba terminando de cargar el escritorio durante el arranque."""
+        if not self.tray.isVisible():
+            self.tray.show()
+        if self._hk is not None:
+            self._hk.register(1, 0, 0x2C)
+            self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT, ord("S"))
 
     def _refresh_menu(self):
         d = get_save_dir()
@@ -1810,14 +1958,9 @@ class App(QObject):
             ok_prt = self._hk.register(1, 0, 0x2C)                     # Impr Pant
             ok_alt = self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT,
                                        ord("S"))                         # Ctrl+Alt+S
-            if not ok_prt and not ok_alt:
-                self.tray.showMessage(
-                    "ClearShot", "No se pudieron registrar los atajos globales "
-                    "(otro programa los está usando). Captura desde el icono de la bandeja.")
-            elif not ok_prt:
-                self.tray.showMessage(
-                    "ClearShot", "Impr Pant está en uso por otro programa o por Recortes "
-                    "de Windows. Usa Ctrl+Alt+S (ver README → Solución de problemas).")
+            if not ok_prt or not ok_alt:
+                # Reintentar tras 3 segundos (útil al encender el PC cuando el shell aún carga)
+                QTimer.singleShot(3000, self._check_hotkeys_after_boot)
             return
 
         # Otros sistemas: atajos con pynput
@@ -1833,8 +1976,37 @@ class App(QObject):
         except Exception:
             pass
 
+    def _check_hotkeys_after_boot(self):
+        if self._hk is None:
+            return
+        ok_prt = self._hk.register(1, 0, 0x2C)
+        ok_alt = self._hk.register(2, WinHotkeys.MOD_CONTROL | WinHotkeys.MOD_ALT, ord("S"))
+        if not ok_prt and not ok_alt:
+            self.tray.showMessage(
+                "ClearShot", "No se pudieron registrar los atajos globales "
+                "(otro programa los está usando). Captura desde el icono de la bandeja.")
+        elif not ok_prt:
+            self.tray.showMessage(
+                "ClearShot", "Impr Pant está en uso por otro programa o por Recortes "
+                "de Windows. Usa Ctrl+Alt+S (ver README → Solución de problemas).")
+
+    def _on_escape_hotkey(self):
+        """Garantiza que la tecla Esc cierre la captura el 100% de las veces,
+        incluso si Windows no había entregado el foco de teclado al overlay."""
+        if self.overlay is not None:
+            e = self.overlay.text_edit
+            if e is not None and e.text().strip():
+                e.clear()
+                self.overlay._commit_text()
+                force_foreground_window(self.overlay)
+            else:
+                self.overlay.cancel()
+        elif self._hk is not None:
+            self._hk.unregister(3)
+
     def capture(self):
         if self.overlay is not None:
+            force_foreground_window(self.overlay)
             return
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         pm = screen.grabWindow(0)  # resolución física completa
@@ -1844,12 +2016,15 @@ class App(QObject):
         self.overlay.saved.connect(self._on_saved)
         self.overlay.pinned.connect(self._on_pinned)
         self.overlay.ocr_requested.connect(self._start_ocr)
+        if self._hk is not None:
+            self._hk.register(3, 0, 0x1B, self._on_escape_hotkey)   # VK_ESCAPE mientras captura
         self.overlay.show()
-        self.overlay.raise_()
-        self.overlay.activateWindow()
-        self.overlay.setFocus()
+        force_foreground_window(self.overlay)
+        QTimer.singleShot(30, lambda: force_foreground_window(self.overlay) if self.overlay else None)
 
     def _overlay_closed(self):
+        if self._hk is not None:
+            self._hk.unregister(3)
         self.overlay = None
         self._refresh_menu()
 
@@ -1927,11 +2102,28 @@ def main():
         out = sys.argv[sys.argv.index("--make-icon") + 1]
         draw_icon(256).save(out)
         return
-    # Evita abrir dos copias a la vez (dos atajos globales)
-    lock = QLockFile(QDir.temp().filePath("clearshot.lock"))
-    lock.setStaleLockTime(0)
-    if not lock.tryLock(100):
-        sys.exit(0)
+    # Evita abrir dos copias a la vez: en Windows usamos un Mutex del kernel en RAM
+    # (se libera solo al apagar o reiniciar el PC, sin dejar archivos .lock huérfanos en disco).
+    _win_mutex = None
+    lock = None
+    if sys.platform == "win32":
+        import ctypes
+        # Limpiar cualquier archivo .lock antiguo de versiones anteriores
+        try:
+            old_lock = Path(QDir.temp().filePath("clearshot.lock"))
+            if old_lock.exists():
+                old_lock.unlink()
+        except OSError:
+            pass
+        _win_mutex = ctypes.windll.kernel32.CreateMutexW(
+            None, False, "Local\\ClearShot_SingleInstance_Mutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            sys.exit(0)
+    else:
+        lock = QLockFile(QDir.temp().filePath("clearshot.lock"))
+        lock.setStaleLockTime(0)
+        if not lock.tryLock(100):
+            sys.exit(0)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(make_icon())
     app.aboutToQuit.connect(lambda: cfg().sync())
