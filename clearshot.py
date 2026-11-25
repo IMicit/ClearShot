@@ -702,7 +702,7 @@ class PinnedWindow(QWidget):
         self.setGeometry(pos.x(), pos.y(), self.base_w, self.base_h)
 
     def _close_rect(self) -> QRectF:
-        return QRectF(self.width() - 24, 4, 20, 20)
+        return QRectF(self.width() - 21, 3, 18, 18)
 
     def cycle_border_color(self):
         low = [c.lower() for c in PALETTE]
@@ -765,14 +765,23 @@ class PinnedWindow(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(QColor(self.border_color), 2))
         p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
-        if self._hover:
-            cr = self._close_rect()
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#dc2626") if self._close_hover else QColor(20, 22, 28, 210))
-            p.drawRoundedRect(cr, 5, 5)
-            p.setPen(QPen(QColor("white"), 1.6))
-            p.drawLine(QPointF(cr.left() + 6, cr.top() + 6), QPointF(cr.right() - 6, cr.bottom() - 6))
-            p.drawLine(QPointF(cr.right() - 6, cr.top() + 6), QPointF(cr.left() + 6, cr.bottom() - 6))
+        # Pequeña X arriba a la derecha: siempre visible (media traslúcida para no
+        # molestar a la captura) y totalmente opaca al pasar el cursor por encima.
+        cr = self._close_rect()
+        p.setPen(Qt.PenStyle.NoPen)
+        if self._close_hover:
+            p.setBrush(QColor(220, 38, 38, 245))
+            x_pen = QPen(QColor(255, 255, 255, 255), 1.7)
+        else:
+            p.setBrush(QColor(20, 22, 28, 75))
+            x_pen = QPen(QColor(255, 255, 255, 115), 1.4)
+        x_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.drawRoundedRect(cr, 4.5, 4.5)
+        p.setPen(x_pen)
+        p.drawLine(QPointF(cr.left() + 5.2, cr.top() + 5.2),
+                   QPointF(cr.right() - 5.2, cr.bottom() - 5.2))
+        p.drawLine(QPointF(cr.right() - 5.2, cr.top() + 5.2),
+                   QPointF(cr.left() + 5.2, cr.bottom() - 5.2))
         if self._badge:
             f = _font(11, bold=True)
             p.setFont(f)
