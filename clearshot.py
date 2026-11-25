@@ -666,24 +666,34 @@ def run_windows_ocr(img: QImage) -> str:
 
 
 class PinnedWindow(QWidget):
-    """Captura flotante fijada siempre encima (Pin to screen), limpia solo con borde."""
+    """Captura flotante fijada (Pin to screen) estilo Canva:
+    - 3 puntitos (⋯) AFUERA de la captura (arriba/abajo/izq/der según posición en pantalla)
+      para no tapar ni un solo píxel del contenido.
+    - Tiradores en las esquinas y bordes para agrandarla o achicarla arrastrando como en Canva.
+    - Presionar 'X' (mientras la arrastras o encima) o 'Esc' la elimina al instante.
+    - Permite dejarla con borde fino (1.5 px) de cualquier color de la paleta o SIN BORDE."""
     closed = pyqtSignal(object)
     saved = pyqtSignal(str)
     message = pyqtSignal(str)
     ocr_requested = pyqtSignal(QImage)
 
-    def __init__(self, img: QImage, pos: QPoint, dpr: float, border_color: str = ACCENT):
+    PAD = 28  # Margen transparente exterior para los 3 puntitos y tiradores tipo Canva
+
+    def __init__(self, img: QImage, pos: QPoint, dpr: float, border_color: str | None = ACCENT):
         super().__init__()
         self.raw_img = img
         self.dpr = dpr
-        self.border_color = QColor(border_color).name()
-        self.base_w = max(48, round(img.width() / dpr))
-        self.base_h = max(36, round(img.height() / dpr))
-        self.zoom = 1.0
+        self.border_color: str | None = QColor(border_color).name() if border_color else None
+        self.base_w = max(32, round(img.width() / dpr))
+        self.base_h = max(24, round(img.height() / dpr))
+        self.img_w = self.base_w
+        self.img_h = self.base_h
         self.opac = 1.0
-        self._drag_offset: QPoint | None = None
+        self._drag_mode: str | None = None   # "move" o clave de tirador ("tl","br",...)
+        self._drag_origin = QPoint()
+        self._drag_start_geom = QRect()
         self._hover = False
-        self._close_hover = False
+        self._dots_hover = False
         self._badge = ""
         self._badge_timer = QTimer(self)
         self._badge_timer.setSingleShot(True)
@@ -692,44 +702,94 @@ class PinnedWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip("Captura fijada (Pin)\n"
-                        "· Arrastrar: mover   · Doble clic / Ctrl+C: copiar\n"
-                        "· Rueda: zoom        · Ctrl+Rueda: opacidad\n"
-                        "· B o 1-9: color     · Clic derecho: menú · Esc: cerrar")
-        self.setGeometry(pos.x(), pos.y(), self.base_w, self.base_h)
+        self.setGeometry(pos.x() - self.PAD, pos.y() - self.PAD,
+                         self.img_w + self.PAD * 2, self.img_h + self.PAD * 2)
 
-    def _close_rect(self) -> QRectF:
-        return QRectF(self.width() - 21, 3, 18, 18)
+    def _img_rect(self) -> QRect:
+        return QRect(self.PAD, self.PAD, self.img_w, self.img_h)
+
+    def _dots_rect(self) -> QRectF:
+        """Ubica el botón de 3 puntitos (⋯) AFUERA de la imagen, moviéndose
+        arriba, abajo, izquierda o derecha según en qué parte de la pantalla esté."""
+        ir = self._img_rect()
+        bw, bh = 24, 18
+        scr = QGuiApplication.screenAt(self.geometry().center()) or QGuiApplication.primaryScreen()
+        sg = scr.geometry() if scr else QRect(0, 0, 1920, 1080)
+        g = self.geometry()
+        # Si hay espacio arriba, va arriba a la derecha (afuera); si está pegado arriba, va abajo
+        if g.top() + ir.top() - bh - 6 >= sg.top() + 8:
+            return QRectF(ir.right() - bw + 1, ir.top() - bh - 5, bw, bh)
+        if g.top() + ir.bottom() + bh + 6 <= sg.bottom() - 8:
+            return QRectF(ir.right() - bw + 1, ir.bottom() + 5, bw, bh)
+        if g.left() + ir.right() + bw + 6 <= sg.right() - 8:
+            return QRectF(ir.right() + 5, ir.top(), bw, bh)
+        return QRectF(ir.left() - bw - 5, ir.top(), bw, bh)
+
+    def _handle_points(self) -> dict[str, tuple[float, float]]:
+        ir = self._img_rect()
+        l, t, r, b = ir.left(), ir.top(), ir.right() + 1, ir.bottom() + 1
+        cx, cy = (l + r) / 2, (t + b) / 2
+        return {"tl": (l, t), "t": (cx, t), "tr": (r, t), "l": (l, cy),
+                "r": (r, cy), "bl": (l, b), "b": (cx, b), "br": (r, b)}
+
+    def _hit_handle(self, pt: QPointF) -> str | None:
+        for k, (x, y) in self._handle_points().items():
+            if abs(pt.x() - x) <= 7 and abs(pt.y() - y) <= 7:
+                return k
+        return None
 
     def cycle_border_color(self):
+        """Recorre la paleta base en loop y al final incluye 'Sin borde'."""
         low = [c.lower() for c in PALETTE]
-        cur = self.border_color.lower()
-        idx = (low.index(cur) + 1) % len(PALETTE) if cur in low else 0
-        self.border_color = PALETTE[idx]
+        if self.border_color is None:
+            self.border_color = PALETTE[0]
+            self._flash("Borde: " + self.border_color.upper())
+        else:
+            cur = self.border_color.lower()
+            if cur in low:
+                idx = low.index(cur) + 1
+                if idx < len(PALETTE):
+                    self.border_color = PALETTE[idx]
+                    self._flash("Borde: " + self.border_color.upper())
+                else:
+                    self.border_color = None
+                    self._flash("Sin borde")
+            else:
+                self.border_color = PALETTE[0]
+                self._flash("Borde: " + self.border_color.upper())
+        self.update()
+
+    def set_no_border(self):
+        self.border_color = None
+        self._flash("Sin borde")
         self.update()
 
     def _flash(self, text: str):
         self._badge = text
-        self._badge_timer.start(1100)
+        self._badge_timer.start(1000)
         self.update()
 
     def _clear_badge(self):
         self._badge = ""
         self.update()
 
-    def _set_zoom(self, z: float):
-        self.zoom = max(0.4, min(3.0, round(z, 2)))
-        self.resize(max(48, round(self.base_w * self.zoom)),
-                    max(36, round(self.base_h * self.zoom)))
-        self._flash(f"Zoom {round(self.zoom * 100)}%")
+    def _set_size(self, nw: int, nh: int, top_left: QPoint | None = None):
+        self.img_w = max(32, min(4000, nw))
+        self.img_h = max(24, min(4000, nh))
+        if top_left is not None:
+            self.setGeometry(top_left.x(), top_left.y(),
+                             self.img_w + self.PAD * 2, self.img_h + self.PAD * 2)
+        else:
+            self.resize(self.img_w + self.PAD * 2, self.img_h + self.PAD * 2)
+        self.update()
 
     def _set_opac(self, o: float):
         self.opac = max(0.25, min(1.0, round(o, 2)))
         self.setWindowOpacity(self.opac)
-        self._flash(f"Opacidad {round(self.opac * 100)}%")
+        self._flash(f"{round(self.opac * 100)}%")
 
     def copy_img(self):
         QApplication.clipboard().setImage(self.raw_img)
@@ -754,74 +814,143 @@ class PinnedWindow(QWidget):
 
     def leaveEvent(self, _):
         self._hover = False
-        self._close_hover = False
+        self._dots_hover = False
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHints(QPainter.RenderHint.Antialiasing |
                          QPainter.RenderHint.SmoothPixmapTransform)
-        p.drawImage(QRectF(self.rect()), self.raw_img)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(self.border_color), 2))
-        p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
-        # Pequeña X arriba a la derecha: siempre visible (media traslúcida para no
-        # molestar a la captura) y totalmente opaca al pasar el cursor por encima.
-        cr = self._close_rect()
+        ir = QRectF(self._img_rect())
+        p.drawImage(ir, self.raw_img)
+
+        # Borde fino opcional (1.5 px) o totalmente sin borde
+        if self.border_color:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(self.border_color), 1.5))
+            p.drawRect(ir.adjusted(0.5, 0.5, -0.5, -0.5))
+
+        # Tiradores tipo Canva en las esquinas cuando pasas el cursor
+        if self._hover and self._drag_mode != "move":
+            p.setPen(QPen(QColor(ACCENT), 1.2))
+            p.setBrush(QColor("white"))
+            for k in ("tl", "tr", "bl", "br"):
+                x, y = self._handle_points()[k]
+                p.drawRoundedRect(QRectF(x - 3.5, y - 3.5, 7, 7), 1.5, 1.5)
+
+        # Botón de 3 puntitos (⋯) AFUERA de la captura (nunca tapa contenido)
+        dr = self._dots_rect()
         p.setPen(Qt.PenStyle.NoPen)
-        if self._close_hover:
-            p.setBrush(QColor(220, 38, 38, 245))
-            x_pen = QPen(QColor(255, 255, 255, 255), 1.7)
+        if self._dots_hover:
+            p.setBrush(QColor(ACCENT))
+            dot_col = QColor("white")
+        elif self._hover:
+            p.setBrush(QColor(24, 26, 34, 230))
+            dot_col = QColor("#e8e8ee")
         else:
-            p.setBrush(QColor(20, 22, 28, 75))
-            x_pen = QPen(QColor(255, 255, 255, 115), 1.4)
-        x_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.drawRoundedRect(cr, 4.5, 4.5)
-        p.setPen(x_pen)
-        p.drawLine(QPointF(cr.left() + 5.2, cr.top() + 5.2),
-                   QPointF(cr.right() - 5.2, cr.bottom() - 5.2))
-        p.drawLine(QPointF(cr.right() - 5.2, cr.top() + 5.2),
-                   QPointF(cr.left() + 5.2, cr.bottom() - 5.2))
-        if self._badge:
-            f = _font(11, bold=True)
+            p.setBrush(QColor(24, 26, 34, 110))
+            dot_col = QColor(255, 255, 255, 160)
+        p.drawRoundedRect(dr, 6, 6)
+        p.setBrush(dot_col)
+        cy = dr.center().y()
+        for dx in (-5.5, 0.0, 5.5):
+            p.drawEllipse(QPointF(dr.center().x() + dx, cy), 1.6, 1.6)
+
+        # Etiqueta corta AFUERA de la captura al arrastrar o avisar
+        msg = "X: eliminar" if self._drag_mode == "move" else self._badge
+        if msg:
+            f = _font(10, bold=True)
             p.setFont(f)
-            bw = _fm(11, True).horizontalAdvance(self._badge) + 18
-            r = QRectF(8, 8, bw, 22)
+            bw = _fm(10, True).horizontalAdvance(msg) + 12
+            bx = dr.left() - bw - 4 if dr.left() - bw - 4 >= 2 else dr.right() + 4
+            br = QRectF(bx, dr.top(), bw, dr.height())
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(20, 22, 28, 225))
-            p.drawRoundedRect(r, 6, 6)
-            p.setPen(QColor("white"))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self._badge)
+            p.drawRoundedRect(br, 5, 5)
+            p.setPen(QColor("#fca5a5") if self._drag_mode == "move" else QColor("white"))
+            p.drawText(br, Qt.AlignmentFlag.AlignCenter, msg)
 
     def mousePressEvent(self, e):
         self.activateWindow()
         self.setFocus()
+        pos = e.position()
         if e.button() == Qt.MouseButton.LeftButton:
-            if self._close_rect().contains(e.position()):
-                self.close_pin()
+            if self._dots_rect().contains(pos):
+                self._show_menu(e.globalPosition().toPoint())
                 return
-            self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            e.accept()
+            h = self._hit_handle(pos)
+            if h:
+                self._drag_mode = h
+                self._drag_origin = e.globalPosition().toPoint()
+                self._drag_start_geom = QRect(self.x() + self.PAD, self.y() + self.PAD,
+                                              self.img_w, self.img_h)
+                e.accept()
+                return
+            if QRectF(self._img_rect()).contains(pos):
+                self._drag_mode = "move"
+                self._drag_origin = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.update()
+                e.accept()
         elif e.button() == Qt.MouseButton.RightButton:
             self._show_menu(e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
-        if self._drag_offset is not None and (e.buttons() & Qt.MouseButton.LeftButton):
-            self.move(e.globalPosition().toPoint() - self._drag_offset)
+        pos = e.position()
+        gpos = e.globalPosition().toPoint()
+        if self._drag_mode == "move" and (e.buttons() & Qt.MouseButton.LeftButton):
+            self.move(gpos - self._drag_origin)
             e.accept()
             return
-        hov = self._close_rect().contains(e.position())
-        if hov != self._close_hover:
-            self._close_hover = hov
-            self.setCursor(Qt.CursorShape.PointingHandCursor if hov
-                           else Qt.CursorShape.SizeAllCursor)
+        if self._drag_mode and self._drag_mode != "move" and (e.buttons() & Qt.MouseButton.LeftButton):
+            # Redimensionar estilo Canva desde cualquier esquina o borde
+            o = self._drag_start_geom
+            dx = gpos.x() - self._drag_origin.x()
+            dy = gpos.y() - self._drag_origin.y()
+            l, t, r, b = o.left(), o.top(), o.right() + 1, o.bottom() + 1
+            h = self._drag_mode
+            if "l" in h:
+                l = min(r - 32, l + dx)
+            if "r" in h:
+                r = max(l + 32, r + dx)
+            if "t" in h:
+                t = min(b - 24, t + dy)
+            if "b" in h:
+                b = max(t + 24, b + dy)
+            nw, nh = max(32, r - l), max(24, b - t)
+            # En las 4 esquinas mantiene proporción como Canva (Shift = libre)
+            if len(h) == 2 and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                ratio = self.base_w / max(1, self.base_h)
+                nh = max(24, round(nw / ratio))
+                if "t" in h:
+                    t = b - nh
+            self._set_size(nw, nh, QPoint(l - self.PAD, t - self.PAD))
+            e.accept()
+            return
+
+        dots_hov = self._dots_rect().contains(pos)
+        if dots_hov != self._dots_hover:
+            self._dots_hover = dots_hov
             self.update()
+        if dots_hov:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            h = self._hit_handle(pos)
+            if h:
+                self.setCursor(HANDLE_CURSORS[h])
+            elif QRectF(self._img_rect()).contains(pos):
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mouseReleaseEvent(self, _):
-        self._drag_offset = None
+        if self._drag_mode == "move":
+            self._drag_mode = None
+            self.update()
+        else:
+            self._drag_mode = None
 
     def mouseDoubleClickEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and not self._close_rect().contains(e.position()):
+        if e.button() == Qt.MouseButton.LeftButton and QRectF(self._img_rect()).contains(e.position()):
             self.copy_img()
 
     def wheelEvent(self, e):
@@ -829,20 +958,21 @@ class PinnedWindow(QWidget):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self._set_opac(self.opac + step * 0.1)
         else:
-            self._set_zoom(self.zoom + step * 0.15)
+            factor = 1.12 if step > 0 else 1 / 1.12
+            self._set_size(round(self.img_w * factor), round(self.img_h * factor))
 
     def keyPressEvent(self, e):
         k = e.key()
         ctrl = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
         t = e.text().lower()
-        if k == Qt.Key.Key_Escape:
+        if k in (Qt.Key.Key_Escape, Qt.Key.Key_Delete, Qt.Key.Key_Backspace) or (not ctrl and t == "x"):
             self.close_pin()
         elif (ctrl and k == Qt.Key.Key_C) or k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.copy_img()
         elif ctrl and k == Qt.Key.Key_S:
             self.save_img()
         elif k == Qt.Key.Key_O:
-            self._flash("Extrayendo texto…")
+            self._flash("OCR…")
             self.ocr_requested.emit(self.raw_img)
         elif t == "b":
             self.cycle_border_color()
@@ -851,21 +981,22 @@ class PinnedWindow(QWidget):
             self.update()
         elif k == Qt.Key.Key_0:
             self._set_opac(1.0)
-            self._set_zoom(1.0)
+            self._set_size(self.base_w, self.base_h)
 
     def _show_menu(self, gpos: QPoint):
         m = QMenu(self)
-        m.addAction("Copiar al portapapeles (Doble clic / Ctrl+C)", self.copy_img)
-        m.addAction("Guardar en carpeta (Ctrl+S)", self.save_img)
-        m.addAction("Extraer texto con OCR (O)", lambda: (
-            self._flash("Extrayendo texto…"), self.ocr_requested.emit(self.raw_img)))
-        m.addAction("Siguiente color de borde (B)", self.cycle_border_color)
+        m.addAction("Eliminar  (X / Esc)", self.close_pin)
         m.addSeparator()
-        m.addAction("Tamaño original 100% (0)", lambda: self._set_zoom(1.0))
+        m.addAction("Sin borde", self.set_no_border)
+        m.addAction("Cambiar color de borde en loop  (B)", self.cycle_border_color)
+        m.addAction("Tamaño original 100%  (0)", lambda: self._set_size(self.base_w, self.base_h))
+        m.addSeparator()
+        m.addAction("Copiar  (Doble clic / Ctrl+C)", self.copy_img)
+        m.addAction("Guardar  (Ctrl+S)", self.save_img)
+        m.addAction("Extraer texto OCR  (O)", lambda: (
+            self._flash("OCR…"), self.ocr_requested.emit(self.raw_img)))
         for pct in (100, 75, 50):
             m.addAction(f"Opacidad {pct}%", lambda p=pct: self._set_opac(p / 100))
-        m.addSeparator()
-        m.addAction("Cerrar (Esc)", self.close_pin)
         m.exec(gpos)
 
     def close_pin(self):
@@ -910,6 +1041,7 @@ class Overlay(QWidget):
         self.pen_w = max(1, min(20, s.value("width", 4, type=int)))
         self.custom_color = s.value("custom_color", "", type=str)
         self.beautify = False
+        self.borderless = False
         self.beautify_theme = s.value("beautify_theme", 0, type=int) % len(BEAUTIFY_THEMES)
 
         self.sel: QRect | None = None
@@ -995,11 +1127,11 @@ class Overlay(QWidget):
         row1.addSpacing(6)
         self.beautify_btn = self._tbtn(
             "beautify",
-            "Ruleta de Fondo bonito  (B)\n"
-            "· Clic o B: activar / siguiente color de la paleta en loop\n"
+            "Ruleta de colores en loop  (B)\n"
+            "· Clic o B: siguiente color de la paleta en loop\n"
             "· Elegir color abajo (1-9): cambia al color y sigue el loop desde ahí\n"
-            "· Clic derecho o Shift+B: quitar fondo bonito",
-            checkable=True)
+            "· Clic derecho o Shift+B: dejar Sin borde",
+            checkable=False)
         self.beautify_btn.clicked.connect(self._on_beautify_clicked)
         self.beautify_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.beautify_btn.customContextMenuRequested.connect(lambda _: self._disable_beautify())
@@ -1171,6 +1303,7 @@ class Overlay(QWidget):
 
     def _set_color(self, c):
         self.pen_color = QColor(c).name()
+        self.borderless = False
         cfg().setValue("color", self.pen_color)
         self._sync_swatches()
         self.dot.set(self.pen_color, self.pen_w)
@@ -1192,7 +1325,12 @@ class Overlay(QWidget):
         if sw is self.custom_sw:
             self.dialog_active.emit(True)
             try:
-                c = QColorDialog.getColor(QColor(self.pen_color), self, "Elige un color")
+                dlg = QColorDialog(QColor(self.pen_color), self)
+                dlg.setWindowTitle("Elige un color")
+                dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+                dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                ok = dlg.exec()
+                c = dlg.selectedColor() if ok else QColor()
             finally:
                 self.dialog_active.emit(False)
             if c.isValid():
@@ -1295,8 +1433,8 @@ class Overlay(QWidget):
 
     def _label_geom(self, s: QRect):
         label = f"{round(s.width() * self.dpr)} × {round(s.height() * self.dpr)} px"
-        if self.beautify:
-            label += f"  ·  Fondo {self.pen_color.upper()} (B sig. · Shift+B quitar)"
+        if self.borderless:
+            label += "  ·  Sin borde"
         lw = _fm(12, False).horizontalAdvance(label) + 16
         ly = s.top() - 26 if s.top() > 30 else s.top() + 6
         lx = s.left() if s.top() > 30 else s.left() + 6
@@ -1357,17 +1495,14 @@ class Overlay(QWidget):
             if self.cur:
                 draw_annotation(p, self.cur, self.img, self.dpr)
 
-            if self.beautify:
-                c1, c2 = _gradient_pair(self.pen_color)
-                grad = QLinearGradient(QPointF(s.topLeft()), QPointF(s.bottomRight()))
-                grad.setColorAt(0.0, c1)
-                grad.setColorAt(1.0, c2)
-                p.setPen(QPen(grad, 6.0, Qt.PenStyle.SolidLine,
-                              Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            if self.borderless:
+                dash = QPen(QColor(255, 255, 255, 95), 1.0, Qt.PenStyle.DashLine)
+                p.setPen(dash)
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRoundedRect(QRectF(s).adjusted(-3, -3, 3, 3), 5, 5)
+                p.drawRect(QRectF(s))
             else:
-                p.setPen(QPen(QColor(self.pen_color), 1.8))
+                # Borde siempre fino (1.5 px), jamás grueso
+                p.setPen(QPen(QColor(self.pen_color), 1.5))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(QRectF(s))
             if not self.cur:
@@ -1717,22 +1852,24 @@ class Overlay(QWidget):
 
     # ---------- acciones ----------
     def _on_beautify_clicked(self):
-        if not self.beautify:
-            self.beautify = True
-            self.beautify_btn.setChecked(True)
-            self.update()
-        else:
-            # Ya estaba activo: avanza al siguiente color de la paleta en loop
-            self.beautify_btn.setChecked(True)
-            self._advance_palette_color()
+        self._step_beautify_loop()
 
     def _step_beautify_loop(self):
-        if not self.beautify:
-            self.beautify = True
-            self.beautify_btn.setChecked(True)
-            self.update()
+        """Recorre la paleta base en loop desde el color actual y al final pasa por 'Sin borde'."""
+        if self.borderless:
+            self.borderless = False
+            self._set_color(PALETTE[0])
+            return
+        low = [c.lower() for c in PALETTE]
+        cur = self.pen_color.lower()
+        if cur in low:
+            idx = low.index(cur) + 1
+            if idx < len(PALETTE):
+                self._set_color(PALETTE[idx])
+            else:
+                self._disable_beautify()
         else:
-            self._advance_palette_color()
+            self._set_color(PALETTE[0])
 
     def _advance_palette_color(self):
         low = [c.lower() for c in PALETTE]
@@ -1742,7 +1879,7 @@ class Overlay(QWidget):
 
     def _disable_beautify(self):
         self.beautify = False
-        self.beautify_btn.setChecked(False)
+        self.borderless = True
         self.update()
 
     def undo(self):
@@ -1758,9 +1895,9 @@ class Overlay(QWidget):
             self._annots_changed()
             self.update()
 
-    def render_result(self, beautify: bool | None = None):
+    def render_result(self, beautify: bool = False):
         """Recorta a resolución nativa y dibuja las anotaciones encima.
-        Guarda estrictamente el área seleccionada, descartando lo que quede fuera."""
+        Guarda estrictamente el área seleccionada limpia y sin bordes añadidos."""
         self._commit_text()
         if not self.sel:
             return None
@@ -1780,18 +1917,18 @@ class Overlay(QWidget):
             for a in self.annots:
                 draw_annotation(p, a, self.img, self.dpr)
             p.end()
-        use_b = self.beautify if beautify is None else beautify
-        if use_b:
+        if beautify:
             img = apply_beautifier(img, self.dpr, self.pen_color)
         return img
 
     def pin_capture(self):
-        """Deja la captura flotando siempre visible en pantalla (solo con el borde, sin fondo invasivo)."""
+        """Deja la captura flotando siempre visible en pantalla (con borde fino o sin borde)."""
         img = self.render_result(beautify=False)
         if img is None or not self.sel:
             return
         gpos = self.mapToGlobal(self.sel.topLeft())
-        self.pinned.emit(img, gpos, self.dpr, self.pen_color)
+        bcol = "" if self.borderless else self.pen_color
+        self.pinned.emit(img, gpos, self.dpr, bcol)
         self.cancel()
 
     def ocr_capture(self):
@@ -1957,42 +2094,8 @@ class WinHotkeys(QAbstractNativeEventFilter):
             self._callbacks.pop(hid, None)
 
     def install_prtsc_hook_fallback(self):
-        """Fallback automático: si Windows 11 Snipping Tool o OneDrive tienen
-        tomado RegisterHotKey(VK_SNAPSHOT), interceptamos 0x2C por WH_KEYBOARD_LL."""
-        if self._ll_hook is not None:
-            return True
-        ctypes = self._ctypes
-        wintypes = self._wintypes
-        u32 = self._user32
-
-        class KBDLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("vkCode", wintypes.DWORD),
-                        ("scanCode", wintypes.DWORD),
-                        ("flags", wintypes.DWORD),
-                        ("time", wintypes.DWORD),
-                        ("dwExtraInfo", ctypes.c_size_t)]
-
-        LRESULT = ctypes.c_ssize_t
-        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-        u32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
-        u32.SetWindowsHookExW.restype = wintypes.HANDLE
-        u32.CallNextHookEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
-        u32.CallNextHookEx.restype = LRESULT
-        u32.UnhookWindowsHookEx.argtypes = [wintypes.HANDLE]
-        u32.UnhookWindowsHookEx.restype = wintypes.BOOL
-
-        def _proc(nCode, wParam, lParam):
-            if nCode == 0 and lParam:
-                kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if kb.vkCode == 0x2C:  # VK_SNAPSHOT (Impr Pant)
-                    if wParam in (0x0100, 0x0104):  # WM_KEYDOWN, WM_SYSKEYDOWN
-                        QTimer.singleShot(0, self._default_cb)
-                    return 1  # Suprime el recorte nativo de Windows
-            return u32.CallNextHookEx(self._ll_hook, nCode, wParam, lParam)
-
-        self._ll_proc = HOOKPROC(_proc)
-        self._ll_hook = u32.SetWindowsHookExW(13, self._ll_proc, None, 0)  # 13 = WH_KEYBOARD_LL
-        return bool(self._ll_hook)
+        """Desactivado: no instalar WH_KEYBOARD_LL en Python para evitar bloqueos de eventos."""
+        return False
 
     def unregister_all(self):
         for hid in list(self._callbacks):
